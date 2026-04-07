@@ -1,0 +1,27 @@
+cat > .gitignore << 'EOF'
+# Secrets — NEVER commit
+.env
+auth/
+*.token
+oauth*.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+EOF

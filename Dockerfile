@@ -16,10 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app code
 COPY *.py ./
+COPY scouts/ ./scouts/
 
-# Auth tokens and logs are mounted as volumes (see compose file)
+# Auth tokens, logs, and scout state snapshots are mounted as volumes
 # so they persist across container restarts
-VOLUME ["/app/auth", "/app/logs"]
+VOLUME ["/app/auth", "/app/logs", "/app/state"]
 
 # Default to running the morning briefing — overridden by docker run / cron
 CMD ["python", "main.py", "--email", "--mode", "morning"]

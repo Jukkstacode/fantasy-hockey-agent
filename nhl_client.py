@@ -142,6 +142,67 @@ class NHLClient:
         data = self._get(f"/player/{player_id}/game-log/{season}/2")
         return data.get("gameLog", [])
 
+    # ── Rosters ──────────────────────────────────────────────────
+
+    def get_team_abbrevs(self) -> list[str]:
+        """All current NHL team abbreviations (from the standings feed)."""
+        data = self._get("/standings/now")
+        teams = []
+        for record in data.get("standings", []):
+            abbrev = record.get("teamAbbrev", {}).get("default", "")
+            if abbrev:
+                teams.append(abbrev)
+        return sorted(teams)
+
+    def get_team_roster(self, team: str) -> dict[str, list[dict]]:
+        """Current active roster for a team.
+
+        Returns:
+            {"forwards": [...], "defensemen": [...], "goalies": [...]} where each
+            entry is {"id", "name", "position"}. Empty lists on failure.
+        """
+        try:
+            data = self._get(f"/roster/{team}/current")
+        except Exception as e:
+            logger.warning("Roster fetch failed for %s: %s", team, e)
+            return {"forwards": [], "defensemen": [], "goalies": []}
+
+        def simplify(group):
+            out = []
+            for p in data.get(group, []):
+                first = p.get("firstName", {}).get("default", "")
+                last = p.get("lastName", {}).get("default", "")
+                out.append({
+                    "id": p.get("id"),
+                    "name": f"{first} {last}".strip(),
+                    "position": p.get("positionCode", ""),
+                })
+            return out
+
+        return {
+            "forwards": simplify("forwards"),
+            "defensemen": simplify("defensemen"),
+            "goalies": simplify("goalies"),
+        }
+
+    def get_team_goalies(self, team: str) -> list[dict]:
+        """Goalies currently on a team's active roster."""
+        return self.get_team_roster(team).get("goalies", [])
+
+    def get_upcoming_games(self, team: str, days: int = 7,
+                           start_date: str = None) -> list[str]:
+        """Dates (YYYY-MM-DD) a team plays in the next `days` days."""
+        if start_date is None:
+            start_date = datetime.now().strftime("%Y-%m-%d")
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        dates = []
+        for i in range(days):
+            date_str = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            for game in self.get_schedule_for_date(date_str):
+                if team in (game["home_team"], game["away_team"]):
+                    dates.append(date_str)
+        return dates
+
     # ── Injuries ─────────────────────────────────────────────────
 
     def get_injuries(self) -> list[dict]:

@@ -37,16 +37,13 @@ class WaiverManager:
         # 1. Pre-load advanced stats
         self.stats.load()
 
-        # 2. Build set of rostered player keys across the entire league
-        self._build_rostered_set()
-
         # 3. Score current roster
         roster = self.yahoo.get_my_roster()
         roster_scored = self._score_roster(roster)
         logger.info("Scored %d roster players", len(roster_scored))
 
         # 4. Get free agents (filtered to actually-available players)
-        free_agents = self._get_free_agents(count=200)
+        free_agents = self._get_free_agents(count=config.SCOUT_AVAILABLE_POOL)
         fa_scored = self._score_free_agents(free_agents)
         logger.info("Scored %d free agents", len(fa_scored))
 
@@ -69,68 +66,17 @@ class WaiverManager:
         return recommendations
 
     def _build_rostered_set(self):
-        """Collect player keys from every team in the league."""
-        logger.info("Collecting rostered players across league...")
-        try:
-            teams = self.yahoo.get_all_teams()
-            for team in teams:
-                team_id = getattr(team, 'team_id', None)
-                if team_id is None:
-                    continue
-                try:
-                    roster = self.yahoo.get_roster_for_date(
-                        __import__('datetime').datetime.now().strftime("%Y-%m-%d")
-                    )
-                    # Note: get_roster_for_date uses our team. We need a way
-                    # to fetch other teams' rosters. For now, just use our own
-                    # team to filter ourselves out.
-                except Exception:
-                    pass
-
-            # Simpler approach: fetch each team's roster directly via the query
-            for team in teams:
-                team_id = getattr(team, 'team_id', None)
-                if team_id is None:
-                    continue
-                try:
-                    players = self.yahoo.query.get_team_roster_player_info_by_date(
-                        team_id,
-                        __import__('datetime').datetime.now().strftime("%Y-%m-%d")
-                    )
-                    for p in players:
-                        key = getattr(p, 'player_key', None)
-                        if key:
-                            self._rostered_keys.add(key)
-                except Exception as e:
-                    logger.debug("Couldn't fetch roster for team %s: %s", team_id, e)
-
-            logger.info("Found %d rostered players league-wide",
-                        len(self._rostered_keys))
-        except Exception as e:
-            logger.warning("Failed to build rostered set: %s", e)
-            logger.warning("Free agent filtering will be limited")
+        """No longer needed: Yahoo's status=A filter returns only unrostered players."""
+        return
 
     def _get_free_agents(self, count: int = 200) -> list:
-        """Fetch league players and filter to actual free agents."""
-        all_players = self.yahoo.query.get_league_players(
-            player_count_limit=count,
-            player_count_start=0,
-        )
-
+        """Fetch available players straight from Yahoo (status=A) and drop the injured."""
         free_agents = []
-        for p in all_players:
-            key = getattr(p, 'player_key', None)
+        for p in self.yahoo.get_available_players(count=count):
             status = getattr(p, 'status', '') or ''
-
-            # Skip if rostered
-            if key and key in self._rostered_keys:
+            if status in ('NA', 'IR', 'IR-LT', 'IR+', 'O'):
                 continue
-            # Skip injured/inactive players (NA = Not Active, IR = Injured Reserve)
-            if status in ('NA', 'IR', 'IR+', 'O'):
-                continue
-
             free_agents.append(p)
-
         return free_agents
 
     def _score_roster(self, roster: list) -> list[dict]:

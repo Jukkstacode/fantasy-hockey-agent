@@ -65,6 +65,21 @@ def log_waiver_moves(recommendations: list[dict]):
     })
 
 
+def log_scouting(report: dict):
+    """Log the ranked scouting report (names and signals only)."""
+    def brief(entries):
+        return [{"player": e["player_name"], "team": e.get("nhl_team", ""),
+                 "signals": e.get("signals", []), "score": e.get("score", 0),
+                 "drop": e.get("drop_candidate")} for e in entries]
+    log_decision("scouting", {
+        "act_now": brief(report.get("act_now", [])),
+        "rising": brief(report.get("rising", [])),
+        "watchlist": brief(report.get("watchlist", [])),
+        "roster_alerts": brief(report.get("roster_alerts", [])),
+        "notes": report.get("notes", []),
+    })
+
+
 def log_error(context: str, error: str):
     """Log an error that occurred during agent execution."""
     log_decision("error", {
@@ -125,6 +140,12 @@ def print_summary():
             for rec in details.get("recommendations", []):
                 print(f"           ADD {rec['add']} / DROP {rec['drop']} "
                       f"({rec['improvement_pct']}%)")
+        elif action == "scouting":
+            n_now = len(details.get("act_now", []))
+            n_rise = len(details.get("rising", []))
+            print(f"  {ts} | SCOUT  | {n_now} act-now, {n_rise} rising")
+            for e in details.get("act_now", []):
+                print(f"           NOW {e['player']} ({e['team']}) {', '.join(e['signals'])}")
         elif action == "error":
             print(f"  {ts} | ERROR  | {details.get('context')}: {details.get('error')}")
         else:

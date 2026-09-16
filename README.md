@@ -81,6 +81,17 @@ fantasy-hockey-agent/
 ├── nhl_client.py        # NHL API client (schedule, injuries, stats)
 ├── lineup_optimizer.py  # Daily lineup optimization logic
 ├── waiver_manager.py    # Waiver wire / free agent evaluation
+├── stats_provider.py    # MoneyPuck data via pyhockey; league-aware player values
+├── state_store.py       # JSON snapshots so scouts can diff against the last run
+├── opportunity.py       # Common shape for every scouting signal
+├── ranker.py            # Merges signals, scores them against your roster
+├── scouts/              # Signal detectors (see SCOUTING_PLAN.md)
+│   ├── injury_return.py #   IR/O -> active since last run
+│   ├── goalie_injury.py #   starter hurt -> backup; start-share drift
+│   ├── deployment.py    #   PP-unit and line promotions from per-game TOI
+│   ├── regression.py    #   ixG vs goals: buy-low and running-hot
+│   ├── ownership.py     #   Yahoo ownership surges
+│   └── news.py          #   RSS feeds classified by Claude into typed events
 ├── decision_log.py      # Logs all decisions for review
 ├── requirements.txt
 ├── .env.example
@@ -99,3 +110,12 @@ fantasy-hockey-agent/
 - Scans free agents and compares to roster weak spots
 - Factors in: recent performance, schedule density, position need
 - Configurable thresholds to avoid churning
+
+### Scouts
+- Each scout compares today against the previous run's snapshot in `state/`
+  and emits opportunities; the ranker scores them against your weakest
+  compatible roster player and groups them as Act Now / Rising / Watchlist
+- Player values are category-weighted z-scores using your league's actual
+  scoring categories, falling back to last season early in the year
+- The news scout needs `ANTHROPIC_API_KEY`; everything else runs without it
+- Full design: `SCOUTING_PLAN.md`

@@ -1,192 +1,406 @@
-"""Advanced stats provider using pyhockey (MoneyPuck/NaturalStatTrick).
+"""Advanced stats provider using pyhockey (MoneyPuck data).
 
-Provides real player valuation using xGoals, points-per-hour, and other
-advanced metrics — much better than Yahoo's ownership percentage.
+Three jobs:
 
-The data is queried once per run and cached in memory to avoid hitting
-the underlying database for every player lookup.
+1. Player valuation. If league scoring categories are supplied (from Yahoo
+   league settings) the value is a category-weighted sum of per-game z-scores
+   across the player pool, so "would this player beat mine" is measured in
+   the stats your league actually counts. Without categories it falls back
+   to the original points-per-hour + xGoals formula.
+
+2. Season fallback. pyhockey only knows completed/in-progress seasons. In
+   September there is no 2026-27 data yet, and in October a player has three
+   games. Values fall back to the previous season until a player has
+   MIN_GAMES_CURRENT games.
+
+3. Game logs. Per-game power-play / even-strength ice time and goalie game
+   logs for the deployment and goalie scouts.
+
+Data is fetched once per run and cached in memory.
 """
 
 import logging
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
+import polars as pl
 import pyhockey
 
 logger = logging.getLogger(__name__)
 
+MIN_GAMES_CURRENT = 10   # trust current-season values after this many games
+MIN_GAMES_POOL = 10      # players with fewer games are excluded from z-score pool
 
-def _current_season() -> int:
-    """Get the current NHL season year.
+# pyhockey uses different situation codes for season tables vs game logs
+SEASON_SITUATION = {"all": "all", "pp": "5on4", "ev": "5on5", "pk": "4on5"}
 
-    pyhockey uses the year of season start (e.g., 2025 = 2025-26 season).
-    NHL seasons start in October, so anything before October is the previous
-    season's year.
+# Yahoo spells some names differently from MoneyPuck
+NAME_ALIASES = {
+    "egor chinakhov": "yegor chinakhov",
+    "nikolai kovalenko": "nikolay kovalenko",
+    "alexander nylander": "alex nylander",
+    "mitchell marner": "mitch marner",
+    "matthew boldy": "matt boldy",
+    "joshua norris": "josh norris",
+    "jacob middleton": "jake middleton",
+}
+
+# Yahoo stat display names -> how to compute a per-player season total from
+# MoneyPuck tables. Each entry: (table, expression). Tables: "all", "ev",
+# "pp", "pk" are skater_seasons situations; "games" is aggregated skater_games.
+SKATER_CATEGORY_MAP = {
+    "G":   ("all", lambda r: r.get("goals", 0)),
+    "A":   ("all", lambda r: (r.get("points", 0) or 0) - (r.get("goals", 0) or 0)),
+    "P":   ("all", lambda r: r.get("points", 0)),
+    "PTS": ("all", lambda r: r.get("points", 0)),
+    "PPP": ("pp",  lambda r: r.get("points", 0)),
+    "PPG": ("pp",  lambda r: r.get("goals", 0)),
+    "PPA": ("pp",  lambda r: (r.get("points", 0) or 0) - (r.get("goals", 0) or 0)),
+    "SHP": ("pk",  lambda r: r.get("points", 0)),
+    "SHG": ("pk",  lambda r: r.get("goals", 0)),
+    "+/-": ("ev",  lambda r: (r.get("goalsFor", 0) or 0) - (r.get("goalsAgainst", 0) or 0)),
+    "PIM": ("all", lambda r: 2 * (r.get("penaltiesTaken", 0) or 0)),
+    "BLK": ("all", lambda r: r.get("shotsBlocked", 0)),
+    "FW":  ("all", lambda r: r.get("faceoffsWon", 0)),
+    "SOG": ("games", lambda r: r.get("shots", 0)),
+    "HIT": ("games", lambda r: r.get("hits", 0)),
+}
+NEGATIVE_CATEGORIES = {"PIM"}  # higher is worse (some leagues count PIM positive; flip via config if so)
+
+
+def _normalize_name(name: str) -> str:
+    if not name:
+        return ""
+    normalized = unicodedata.normalize("NFKD", name)
+    return normalized.encode("ascii", "ignore").decode("ascii").lower().strip()
+
+
+def name_keys(name: str) -> list[str]:
+    """Lookup keys for fuzzy name matching between Yahoo and MoneyPuck.
+
+    'Juraj Slafkovský' -> ['juraj slafkovsky', 'slafkovsky j', 'slafkovsk j']
+    The truncated form handles a MoneyPuck quirk where the last character of
+    some names is dropped.
     """
-    now = datetime.now()
-    return now.year if now.month >= 9 else now.year - 1
+    normalized = _normalize_name(name)
+    if not normalized:
+        return []
+    normalized = NAME_ALIASES.get(normalized, normalized)
+    keys = [normalized]
+    parts = normalized.replace(".", "").split()
+    if len(parts) >= 2:
+        first, last = parts[0], parts[-1]
+        keys.append(f"{last} {first[0]}")
+        if len(last) > 4:
+            keys.append(f"{last[:-1]} {first[0]}")
+    return keys
+
+
+def current_season_year(today: date = None) -> int:
+    """MoneyPuck season year: 2025 means 2025-26. Seasons start in October."""
+    today = today or date.today()
+    return today.year if today.month >= 9 else today.year - 1
 
 
 class StatsProvider:
-    """Wraps pyhockey with caching for fast repeated lookups."""
+    """Wraps pyhockey with caching, season fallback, and league-aware scoring."""
 
-    def __init__(self, season: Optional[int] = None):
-        self.season = season or _current_season()
-        self._skater_cache: dict[str, dict] = {}
-        self._goalie_cache: dict[str, dict] = {}
+    def __init__(self, season: Optional[int] = None, as_of: Optional[date] = None):
+        self.as_of = as_of or date.today()
+        self.requested_season = season or current_season_year(self.as_of)
+        self.season = self.requested_season
+        self.season_is_stale = False     # True when we fell back to an older season
         self._loaded = False
+        self._skaters: dict[str, dict] = {}        # name key -> row (situation all)
+        self._skaters_by_sit: dict[str, dict[str, dict]] = {}   # sit -> name key -> row
+        self._goalies: dict[str, dict] = {}
+        self._prev_skaters: Optional[dict[str, dict]] = None
+        self._prev_goalies: Optional[dict[str, dict]] = None
+        self._game_totals: Optional[dict[str, dict]] = None    # name key -> shots/hits totals
+        self._categories: list[str] = []
+        self._cat_values: dict[str, float] = {}    # name key -> category-weighted value
+        self._game_log_cache: dict[tuple, pl.DataFrame] = {}
+
+    # ── Loading ──────────────────────────────────────────────────
 
     def load(self):
-        """Pre-load all skater and goalie data for the current season.
-
-        This makes ONE query to pyhockey instead of one per player.
-        """
         if self._loaded:
             return
+        self._loaded = True
+        season = self.requested_season
+        for attempt in range(3):
+            try:
+                self._load_season(season)
+                self.season = season
+                self.season_is_stale = season != self.requested_season
+                if self.season_is_stale:
+                    logger.info("No MoneyPuck data for %s yet; using %s", self.requested_season, season)
+                return
+            except ValueError as e:
+                if "for season" in str(e).lower():
+                    season -= 1
+                    continue
+                logger.warning("Failed to load advanced stats: %s", e)
+                return
+            except Exception as e:
+                logger.warning("Failed to load advanced stats: %s", e)
+                return
 
-        logger.info("Loading advanced stats from pyhockey for season %s...", self.season)
+    def _index(self, df: pl.DataFrame) -> dict[str, dict]:
+        """Index rows by fuzzy name keys, plus last name alone when unique."""
+        out = {}
+        by_last: dict[str, list] = {}
+        for row in df.iter_rows(named=True):
+            for key in name_keys(row["name"]):
+                out[key] = row
+            parts = _normalize_name(row["name"]).split()
+            if parts:
+                by_last.setdefault("last:" + parts[-1], []).append(row)
+        for key, rows in by_last.items():
+            if len(rows) == 1:
+                out[key] = rows[0]
+        return out
 
+    def _load_season(self, season: int):
+        logger.info("Loading advanced stats from pyhockey for season %s...", season)
+        for sit, code in SEASON_SITUATION.items():
+            df = pyhockey.skater_seasons(season=season, situation=code, quiet=True)
+            self._skaters_by_sit[sit] = self._index(df)
+        self._skaters = self._skaters_by_sit["all"]
+        goalies = pyhockey.goalie_seasons(season=season, quiet=True)
+        if "situation" in goalies.columns:
+            goalies = goalies.filter(pl.col("situation") == "all")
+        self._goalies = self._index(goalies)
+        logger.info("  Loaded %d skaters, %d goalies",
+                    len({r["name"] for r in self._skaters.values()}),
+                    len({r["name"] for r in self._goalies.values()}))
+
+    def _load_previous(self):
+        if self._prev_skaters is not None:
+            return
+        self._prev_skaters, self._prev_goalies = {}, {}
         try:
-            # Load all skaters across the league
-            skaters = pyhockey.skater_seasons(season=self.season, situation='all')
-            for row in skaters.iter_rows(named=True):
-                # Store under multiple keys for fuzzy matching
-                for key in self._name_keys(row['name']):
-                    self._skater_cache[key] = row
-            unique_skaters = len(set(
-                r['name'] for r in self._skater_cache.values()
-            ))
-            logger.info("  Loaded %d skater records (%d unique names)",
-                        len(self._skater_cache), unique_skaters)
-
-            # Load all goalies
-            goalies = pyhockey.goalie_seasons(season=self.season)
-            for row in goalies.iter_rows(named=True):
-                for key in self._name_keys(row['name']):
-                    self._goalie_cache[key] = row
-            unique_goalies = len(set(
-                r['name'] for r in self._goalie_cache.values()
-            ))
-            logger.info("  Loaded %d goalie records (%d unique names)",
-                        len(self._goalie_cache), unique_goalies)
-
-            self._loaded = True
+            prev = self.season - 1
+            self._prev_skaters = self._index(pyhockey.skater_seasons(season=prev, situation="all", quiet=True))
+            pg = pyhockey.goalie_seasons(season=prev, quiet=True)
+            if "situation" in pg.columns:
+                pg = pg.filter(pl.col("situation") == "all")
+            self._prev_goalies = self._index(pg)
+            logger.info("  Loaded previous season (%s) for fallback", prev)
         except Exception as e:
-            logger.warning("Failed to load advanced stats: %s", e)
-            logger.warning("Falling back to basic player valuation")
-            self._loaded = True  # Mark loaded so we don't retry
+            logger.warning("Previous season load failed: %s", e)
 
-    def _normalize_name(self, name: str) -> str:
-        """Normalize a player name: strip accents, lowercase, trim."""
-        if not name:
-            return ""
-        normalized = unicodedata.normalize('NFKD', name)
-        ascii_name = normalized.encode('ascii', 'ignore').decode('ascii')
-        return ascii_name.lower().strip()
+    def _load_game_totals(self):
+        """Season shots/hits per player (not in the season table) from game logs."""
+        if self._game_totals is not None:
+            return
+        self._game_totals = {}
+        try:
+            df = pyhockey.skater_games(season=self.season, situation="all", quiet=True)
+            agg = df.group_by("name").agg([
+                pl.col("shots").sum().alias("shots"),
+                pl.col("hits").sum().alias("hits"),
+                pl.col("gameID").n_unique().alias("gp"),
+            ])
+            self._game_totals = self._index(agg)
+        except Exception as e:
+            logger.warning("Game totals load failed (SOG/HIT categories unavailable): %s", e)
 
-    def _name_keys(self, name: str) -> list[str]:
-        """Generate multiple lookup keys for a name to enable fuzzy matching.
-
-        Returns keys like:
-          - 'juraj slafkovsky'  (normalized full)
-          - 'slafkovsky j'      (last + first initial)
-          - 'slafkovsk j'       (truncated last + first initial — handles MoneyPuck bug)
-        """
-        if not name:
-            return []
-
-        normalized = self._normalize_name(name)
-        if not normalized:
-            return []
-
-        keys = [normalized]
-
-        parts = normalized.split()
-        if len(parts) >= 2:
-            first = parts[0]
-            last = parts[-1]
-            # Last name + first initial
-            keys.append(f"{last} {first[0]}")
-            # Truncated last name + first initial (handles MoneyPuck name bugs
-            # where the final character of a name is sometimes dropped)
-            if len(last) > 4:
-                keys.append(f"{last[:-1]} {first[0]}")
-
-        return keys
+    # ── Lookup helpers ───────────────────────────────────────────
 
     def _lookup(self, cache: dict, player_name: str) -> Optional[dict]:
-        """Try multiple key variations to find a player in the cache."""
-        for key in self._name_keys(player_name):
+        for key in name_keys(player_name):
             if key in cache:
                 return cache[key]
+        parts = _normalize_name(player_name).split()
+        if parts:
+            return cache.get("last:" + parts[-1])
         return None
 
-    def get_skater_value(self, player_name: str) -> float:
-        """Calculate a fantasy value score for a skater.
-
-        Combines points-per-hour (production rate) and xGoalsForPerHour
-        (chance creation) for a stable, predictive value.
-
-        Returns 0.0 if the player isn't found.
-        """
+    def get_skater_stats(self, player_name: str) -> Optional[dict]:
         self.load()
-        stats = self._lookup(self._skater_cache, player_name)
-        if not stats:
+        return self._lookup(self._skaters, player_name)
+
+    def get_goalie_stats(self, player_name: str) -> Optional[dict]:
+        self.load()
+        return self._lookup(self._goalies, player_name)
+
+    def get_skater_stats_with_fallback(self, player_name: str) -> tuple[Optional[dict], bool]:
+        """Current-season row, or previous season if too few games. (row, is_fallback)"""
+        self.load()
+        row = self._lookup(self._skaters, player_name)
+        if row and (row.get("gamesPlayed") or 0) >= MIN_GAMES_CURRENT:
+            return row, False
+        self._load_previous()
+        prev = self._lookup(self._prev_skaters or {}, player_name)
+        if prev and (prev.get("gamesPlayed") or 0) >= MIN_GAMES_CURRENT:
+            return prev, True
+        return row, False
+
+    # ── League-aware scoring ─────────────────────────────────────
+
+    def set_league_categories(self, categories: list[str], negative: set[str] = None):
+        """Enable category-weighted valuation using the league's stat categories."""
+        self._categories = [c for c in categories if c in SKATER_CATEGORY_MAP]
+        skipped = [c for c in categories if c not in SKATER_CATEGORY_MAP and c not in GOALIE_KNOWN]
+        if skipped:
+            logger.info("Categories without a MoneyPuck mapping (ignored): %s", skipped)
+        self._negative = set(negative or NEGATIVE_CATEGORIES)
+        self._cat_values = {}
+        if self._categories:
+            self.load()
+            self._compute_category_values()
+
+    def _compute_category_values(self):
+        needs_games = any(SKATER_CATEGORY_MAP[c][0] == "games" for c in self._categories)
+        if needs_games:
+            self._load_game_totals()
+        # Build per-player per-game rates
+        players = {}
+        for key, row in self._skaters.items():
+            name = row["name"]
+            if name in players:
+                continue
+            gp = row.get("gamesPlayed") or 0
+            if gp < MIN_GAMES_POOL:
+                continue
+            rates = {}
+            for cat in self._categories:
+                table, fn = SKATER_CATEGORY_MAP[cat]
+                if table == "games":
+                    src = self._lookup(self._game_totals or {}, name)
+                    total = fn(src) if src else None
+                else:
+                    src = self._lookup(self._skaters_by_sit.get(table, {}), name)
+                    total = fn(src) if src else 0
+                if total is None:
+                    continue
+                rates[cat] = (total or 0) / gp
+            players[name] = rates
+        if not players:
+            return
+        # z-scores per category
+        stats = {}
+        for cat in self._categories:
+            vals = [r[cat] for r in players.values() if cat in r]
+            if len(vals) < 20:
+                continue
+            mean = sum(vals) / len(vals)
+            var = sum((v - mean) ** 2 for v in vals) / len(vals)
+            stats[cat] = (mean, var ** 0.5 or 1.0)
+        for name, rates in players.items():
+            z_total = 0.0
+            for cat, (mean, sd) in stats.items():
+                if cat not in rates:
+                    continue
+                z = (rates[cat] - mean) / sd
+                if cat in self._negative:
+                    z = -z
+                z_total += z
+            # Scale to roughly the legacy 10-60 range so thresholds stay meaningful
+            value = 30.0 + 8.0 * z_total
+            for key in name_keys(name):
+                self._cat_values[key] = round(max(value, 0.0), 2)
+        logger.info("Category-weighted values computed for %d skaters over %s",
+                    len(players), list(stats.keys()))
+
+    # ── Values ───────────────────────────────────────────────────
+
+    def get_skater_value(self, player_name: str) -> float:
+        self.load()
+        if self._cat_values:
+            for key in name_keys(player_name):
+                if key in self._cat_values:
+                    return self._cat_values[key]
+            # Not in this season's pool: fall back to legacy formula on prior season
+        row, _ = self.get_skater_stats_with_fallback(player_name)
+        return self._legacy_skater_value(row)
+
+    @staticmethod
+    def _legacy_skater_value(stats: Optional[dict]) -> float:
+        if not stats or (stats.get("gamesPlayed") or 0) < 5:
             return 0.0
-
-        points_per_hour = stats.get('pointsPerHour') or 0.0
-        xgoals_per_hour = stats.get('xGoalsForPerHour') or 0.0
-        games_played = stats.get('gamesPlayed') or 0
-
-        # Need a minimum sample size to trust the rate stats
-        if games_played < 5:
-            return 0.0
-
-        # Weight points-per-hour higher (it's the actual production)
-        # but boost with xGoals (predictive of future production)
-        score = (points_per_hour * 10.0) + (xgoals_per_hour * 2.0)
-        return round(score, 2)
+        pph = stats.get("pointsPerHour") or 0.0
+        xg = stats.get("xGoalsForPerHour") or 0.0
+        return round(pph * 10.0 + xg * 2.0, 2)
 
     def get_goalie_value(self, player_name: str) -> float:
-        """Calculate a fantasy value score for a goalie.
-
-        Uses Goals Saved Above Expected (xGoals - actual goals) per game.
-        Positive = above-average goalie.
-        """
+        """Goals Saved Above Expected per game, plus a workload bonus."""
         self.load()
-        stats = self._lookup(self._goalie_cache, player_name)
+        stats = self._lookup(self._goalies, player_name)
+        if not stats or (stats.get("gamesPlayed") or 0) < 3:
+            self._load_previous()
+            stats = self._lookup(self._prev_goalies or {}, player_name)
         if not stats:
             return 0.0
-
-        games_played = stats.get('gamesPlayed') or 0
-        if games_played < 3:
+        gp = stats.get("gamesPlayed") or 0
+        if gp < 3:
             return 0.0
-
-        x_goals_against = stats.get('xGoals') or 0.0
-        actual_goals = stats.get('goals') or 0.0
-
-        # Goals Saved Above Expected — positive is good
-        gsax = x_goals_against - actual_goals
-        gsax_per_game = gsax / games_played
-
-        # Convert to a 0-100ish scale, boost with games played
-        # (a workhorse goalie is more valuable than a backup with great rate)
-        score = (gsax_per_game * 20.0) + (games_played * 0.5)
-        return round(score, 2)
+        gsax = (stats.get("xGoals") or 0.0) - (stats.get("goals") or 0.0)
+        return round((gsax / gp) * 20.0 + gp * 0.5, 2)
 
     def get_player_value(self, player_name: str, position: str) -> float:
-        """Get a value score for any player based on position."""
-        if 'G' in position.upper():
+        if "G" in (position or "").upper():
             return self.get_goalie_value(player_name)
         return self.get_skater_value(player_name)
 
-    def get_skater_stats(self, player_name: str) -> Optional[dict]:
-        """Get the raw stats dict for a skater (for debugging/display)."""
-        self.load()
-        return self._lookup(self._skater_cache, player_name)
+    # ── Game logs (for scouts) ───────────────────────────────────
 
-    def get_goalie_stats(self, player_name: str) -> Optional[dict]:
-        """Get the raw stats dict for a goalie."""
+    def get_skater_games(self, situation: str, days: int = 45,
+                         end_date: Optional[date] = None) -> pl.DataFrame:
+        """Per-game skater rows for the last `days` days ending at as_of."""
         self.load()
-        return self._lookup(self._goalie_cache, player_name)
+        end_date = end_date or self.as_of
+        start = end_date - timedelta(days=days)
+        key = ("skater", situation, start, end_date)
+        if key not in self._game_log_cache:
+            try:
+                df = pyhockey.skater_games(
+                    season=self.season, situation=situation,
+                    start_date=start.isoformat(), end_date=end_date.isoformat(), quiet=True,
+                )
+            except Exception as e:
+                logger.warning("skater_games(%s) failed: %s", situation, e)
+                df = pl.DataFrame()
+            self._game_log_cache[key] = df
+        return self._game_log_cache[key]
+
+    def get_goalie_games(self, days: int = 45, end_date: Optional[date] = None) -> pl.DataFrame:
+        """Per-game goalie rows (one row per situation) for the window."""
+        self.load()
+        end_date = end_date or self.as_of
+        start = end_date - timedelta(days=days)
+        key = ("goalie", start, end_date)
+        if key not in self._game_log_cache:
+            try:
+                df = pyhockey.goalie_games(
+                    season=self.season, start_date=start.isoformat(),
+                    end_date=end_date.isoformat(), quiet=True,
+                )
+            except Exception as e:
+                logger.warning("goalie_games failed: %s", e)
+                df = pl.DataFrame()
+            self._game_log_cache[key] = df
+        return self._game_log_cache[key]
+
+    def regression_table(self) -> list[dict]:
+        """Skaters with ixG vs goals gap (positive diff = shooting cold)."""
+        self.load()
+        seen, out = set(), []
+        for row in self._skaters.values():
+            if row["name"] in seen:
+                continue
+            seen.add(row["name"])
+            gp = row.get("gamesPlayed") or 0
+            ixg = row.get("individualxGoals") or 0.0
+            goals = row.get("goals") or 0
+            out.append({
+                "name": row["name"], "team": row.get("team", ""),
+                "position": row.get("position", ""), "gp": gp,
+                "goals": goals, "ixg": round(ixg, 2), "diff": round(ixg - goals, 2),
+            })
+        return out
+
+
+GOALIE_KNOWN = {"W", "L", "GA", "GAA", "SV", "SV%", "SHO", "SA", "GS", "MIN"}

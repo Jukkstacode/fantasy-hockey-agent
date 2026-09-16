@@ -62,6 +62,10 @@ WAIVER_MIN_GAMES=3
 WAIVER_MAX_ADDS_PER_WEEK=4
 MATCHUP_GAA_THRESHOLD=3.0
 
+# Scouting: news classification needs a Claude API key (optional; skipped if blank)
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-opus-5
+
 # Email configuration
 GMAIL_USER=your.email@gmail.com
 GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
@@ -88,6 +92,7 @@ docker run --rm \
   --env-file .env \
   -v ~/fantasy-hockey-agent/auth:/app/auth \
   -v ~/fantasy-hockey-agent/logs:/app/logs \
+  -v ~/fantasy-hockey-agent/state:/app/state \
   fantasy-hockey-agent \
   python main.py --email --mode morning
 ```
@@ -108,10 +113,10 @@ server is on a different TZ — `date` will tell you):
 
 ```
 # Morning briefing (lineup + waivers) at 9:00 AM Pacific
-0 9 * * * docker run --rm --env-file /home/chrisbimm/fantasy-hockey-agent/.env -v /home/chrisbimm/fantasy-hockey-agent/auth:/app/auth -v /home/chrisbimm/fantasy-hockey-agent/logs:/app/logs fantasy-hockey-agent python main.py --email --mode morning >> /home/chrisbimm/fantasy-hockey-agent/cron.log 2>&1
+0 9 * * * docker run --rm --env-file /home/chrisbimm/fantasy-hockey-agent/.env -v /home/chrisbimm/fantasy-hockey-agent/auth:/app/auth -v /home/chrisbimm/fantasy-hockey-agent/logs:/app/logs -v /home/chrisbimm/fantasy-hockey-agent/state:/app/state fantasy-hockey-agent python main.py --email --mode morning >> /home/chrisbimm/fantasy-hockey-agent/cron.log 2>&1
 
 # Evening lineup check at 3:00 PM Pacific (catches late scratches)
-0 15 * * * docker run --rm --env-file /home/chrisbimm/fantasy-hockey-agent/.env -v /home/chrisbimm/fantasy-hockey-agent/auth:/app/auth -v /home/chrisbimm/fantasy-hockey-agent/logs:/app/logs fantasy-hockey-agent python main.py --email --mode evening >> /home/chrisbimm/fantasy-hockey-agent/cron.log 2>&1
+0 15 * * * docker run --rm --env-file /home/chrisbimm/fantasy-hockey-agent/.env -v /home/chrisbimm/fantasy-hockey-agent/auth:/app/auth -v /home/chrisbimm/fantasy-hockey-agent/logs:/app/logs -v /home/chrisbimm/fantasy-hockey-agent/state:/app/state fantasy-hockey-agent python main.py --email --mode evening >> /home/chrisbimm/fantasy-hockey-agent/cron.log 2>&1
 ```
 
 Save and exit. Verify with `crontab -l`.
@@ -138,4 +143,30 @@ cd ~/fantasy-hockey-agent
 docker build -t fantasy-hockey-agent .
 ```
 
-The auth tokens and logs persist because they're mounted as volumes.
+The auth tokens, logs, and scout state persist because they're mounted as volumes.
+
+## Re-authorizing Yahoo from the server (no browser)
+
+If the API starts returning "This application is not authorized to perform this
+action", the app's Fantasy Sports permission or the token needs a refresh. From
+the server:
+
+```bash
+cd ~/fantasy-hockey-agent
+./dev.sh python main.py --auth
+```
+
+It prints an authorization URL. Open it on any device, approve, paste the
+verifier code back into the terminal. The new token is saved to `auth/.env`.
+
+## Local development on the server
+
+`./dev.sh <command>` runs a command in the Docker image with the live project
+directory mounted, so code edits apply without a rebuild:
+
+```bash
+./dev.sh python main.py --scout-only          # scouting report to console
+./dev.sh python main.py --as-of 2026-03-20    # backtest scouts on a past date
+```
+
+Rebuild the image whenever `requirements.txt` changes.

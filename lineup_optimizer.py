@@ -141,12 +141,7 @@ class LineupOptimizer:
         # Sort by score descending — best players claim slots first
         scored_players.sort(key=lambda x: x["score"], reverse=True)
 
-        # Standard Yahoo H2H hockey roster
-        # TODO: Fetch actual roster positions from league settings
-        available_slots = {
-            "C": 2, "LW": 2, "RW": 2, "D": 4, "G": 2, "Util": 1,
-            "BN": 4, "IR": 2, "IR+": 2,
-        }
+        available_slots = self._roster_slots()
         filled_slots = {pos: 0 for pos in available_slots}
         changes = []
 
@@ -189,6 +184,18 @@ class LineupOptimizer:
                 })
 
         return changes
+
+    def _roster_slots(self) -> dict[str, int]:
+        """Roster slot counts from league settings, with a standard fallback."""
+        default = {"C": 2, "LW": 2, "RW": 2, "D": 4, "G": 2, "Util": 1,
+                   "BN": 4, "IR": 2, "IR+": 2}
+        try:
+            slots = self.yahoo.get_league_scoring().get("roster_positions", {})
+            if slots:
+                return dict(slots)
+        except Exception as e:
+            logger.warning("Could not read roster positions from league settings: %s", e)
+        return default
 
     def _get_opponent(self, team: str, teams_playing: set, date_str: str) -> str:
         """Find the opponent for a team on a given date."""

@@ -1,21 +1,41 @@
-"""Yahoo Fantasy API client wrapping yfpy (read-only).
+"""Yahoo Fantasy API client wrapping yfpy.
 
-Yahoo's API only grants read access, so this client fetches
-roster, league, and player data. The agent generates recommendations
-that you execute manually in the Yahoo Fantasy app.
+Reads roster, league settings, available players and ownership data. The
+Yahoo API also supports writes (lineup PUT, add/drop POST) with the
+Read/Write app permission, but this agent stays advisory: it recommends,
+you click. See SCOUTING_PLAN.md section 3.2 if you want to change that.
 """
 
 import logging
+import os
+import sys
+from datetime import datetime
+from typing import Optional
 
 from yfpy.query import YahooFantasySportsQuery
+from yfpy.models import Player
 
 import config
+from scouts.base import PlayerInfo
 
 logger = logging.getLogger(__name__)
 
+YAHOO_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
+PAGE = 25   # Yahoo's hard cap per players request
+
+
+def _headless() -> bool:
+    """True when there's no browser to open (SSH session, Docker, cron)."""
+    flag = os.getenv("YAHOO_BROWSER_CALLBACK", "").lower()
+    if flag in ("1", "true", "yes"):
+        return False
+    if flag in ("0", "false", "no"):
+        return True
+    return not os.environ.get("DISPLAY") or not sys.stdin.isatty()
+
 
 class YahooClient:
-    """Read-only wrapper around yfpy for Yahoo Fantasy Hockey."""
+    """Wrapper around yfpy for Yahoo Fantasy Hockey."""
 
     def __init__(self):
         self.query = YahooFantasySportsQuery(
@@ -25,8 +45,16 @@ class YahooClient:
             yahoo_consumer_secret=config.YAHOO_CONSUMER_SECRET,
             env_file_location=config.AUTH_DIR,
             save_token_data_to_env_file=True,
-            browser_callback=True,
+            browser_callback=not _headless(),
         )
+        self._scoring: Optional[dict] = None
+        self._league_key: Optional[str] = None
+
+    @property
+    def league_key(self) -> str:
+        if self._league_key is None:
+            self._league_key = self.query.get_league_key()
+        return self._league_key
 
     # ── League info ──────────────────────────────────────────────
 
@@ -36,64 +64,161 @@ class YahooClient:
         logger.info("Fetched league settings")
         return settings
 
+    def get_league_scoring(self) -> dict:
+        """Parsed league settings: stat categories and roster slots.
+
+        Returns:
+            {"categories": ["G", "A", ...], "roster_positions": {"C": 2, ...},
+             "scoring_type": "head", "uses_faab": bool, ...}
+        """
+        if self._scoring is not None:
+            return self._scoring
+        s = self.get_league_settings()
+        categories = []
+        for st in getattr(getattr(s, "stat_categories", None), "stats", []) or []:
+            if getattr(st, "is_only_display_stat", 0) in (1, "1", True):
+                continue
+            name = getattr(st, "display_name", None) or getattr(st, "abbr", None) or getattr(st, "name", "")
+            if name:
+                categories.append(str(name))
+        positions = {}
+        for rp in getattr(s, "roster_positions", []) or []:
+            pos = getattr(rp, "position", None)
+            if pos:
+                positions[str(pos)] = int(getattr(rp, "count", 0) or 0)
+        self._scoring = {
+            "categories": categories,
+            "roster_positions": positions,
+            "scoring_type": getattr(s, "scoring_type", ""),
+            "uses_faab": bool(getattr(s, "uses_faab", 0)),
+            "waiver_rule": getattr(s, "waiver_rule", ""),
+            "max_weekly_adds": getattr(s, "max_weekly_adds", None),
+        }
+        logger.info("League categories: %s | roster: %s", categories, positions)
+        return self._scoring
+
     def get_league_scoreboard(self):
-        """Get current week's scoreboard."""
         return self.query.get_league_scoreboard()
 
     def get_league_standings(self):
-        """Get current league standings."""
         return self.query.get_league_standings()
+
+    def get_recent_transactions(self) -> list:
+        """League add/drop/trade transactions (most recent first)."""
+        return self.query.get_league_transactions()
 
     # ── Team / roster ────────────────────────────────────────────
 
     def get_all_teams(self) -> list:
-        """Fetch all teams in the league."""
         return self.query.get_league_teams()
 
     def get_my_roster(self) -> list:
-        """Get the current roster for our team."""
-        from datetime import datetime
         today = datetime.now().strftime("%Y-%m-%d")
-        roster = self.query.get_team_roster_player_info_by_date(
-            config.YAHOO_TEAM_ID,
-            today
-        )
-        return roster
+        return self.get_roster_for_date(today)
 
     def get_roster_for_date(self, date_str: str) -> list:
-        """Get roster for a specific date (YYYY-MM-DD)."""
-        return self.query.get_team_roster_player_info_by_date(
-            config.YAHOO_TEAM_ID,
-            date_str
-        )
+        return self.query.get_team_roster_player_info_by_date(config.YAHOO_TEAM_ID, date_str)
 
     # ── Player data ──────────────────────────────────────────────
 
-    def get_free_agents(self, position: str = None, count: int = 25) -> list:
-        """Fetch league players.
+    def get_available_players(self, count: int = 300, status: str = "A",
+                              sort: str = "AR") -> list[Player]:
+        """Players not on any roster in this league, best first.
 
         Args:
-            position: Filter by position (C, LW, RW, D, G, or None for all)
-            count: Number of players to return
+            count: how many to fetch (pages of 25 under the hood)
+            status: "A" = all available, "FA" = free agents only, "W" = waivers only
+            sort: "AR" actual rank, "OR" overall rank, "PTS" fantasy points
         """
-        players = self.query.get_league_players(
-            player_count_limit=count,
-            player_count_start=0,
-        )
+        out: list[Player] = []
+        start = 0
+        while start < count:
+            n = min(PAGE, count - start)
+            url = (f"{YAHOO_BASE}/league/{self.league_key}/players;status={status};"
+                   f"sort={sort};start={start};count={n};out=ownership,percent_owned")
+            try:
+                page = self.query.query(url, ["league", "players"], Player)
+            except Exception as e:
+                logger.warning("Available-players page at %d failed: %s", start, e)
+                break
+            if not page:
+                break
+            if not isinstance(page, list):
+                page = [page]
+            out.extend(page)
+            if len(page) < n:
+                break
+            start += n
+        logger.info("Fetched %d available players (status=%s)", len(out), status)
+        return out
+
+    def get_free_agents(self, position: str = None, count: int = 25) -> list:
+        players = self.get_available_players(count=count)
         if position:
-            players = [
-                p for p in players
-                if hasattr(p, 'eligible_positions') and position in str(p.eligible_positions)
-            ]
+            players = [p for p in players
+                       if position in [str(x) for x in (getattr(p, "eligible_positions", []) or [])]]
         return players
 
-    def get_waivers(self, count: int = 25) -> list:
-        """Fetch league players."""
-        return self.query.get_league_players(
-            player_count_limit=count,
-            player_count_start=0,
-        )
-
     def get_player_stats(self, player_key: str):
-        """Get stats for a specific player."""
         return self.query.get_player_stats_for_season(player_key)
+
+    # ── Player universe for the scouts ───────────────────────────
+
+    def get_player_universe(self, pool: int = None) -> list[PlayerInfo]:
+        """My roster plus the top available players, as PlayerInfo records."""
+        pool = pool or config.SCOUT_AVAILABLE_POOL
+        infos = []
+        for p in self.get_my_roster():
+            info = player_to_info(p)
+            info.on_my_roster = True
+            info.ownership_type = "team"
+            infos.append(info)
+        for p in self.get_available_players(count=pool):
+            info = player_to_info(p)
+            if not info.ownership_type:
+                info.ownership_type = "freeagents"
+            infos.append(info)
+        return infos
+
+
+# ── yfpy Player -> PlayerInfo ────────────────────────────────────
+
+def player_name(player) -> str:
+    try:
+        return player.full_name
+    except AttributeError:
+        try:
+            return f"{player.name.first} {player.name.last}"
+        except AttributeError:
+            return str(player)
+
+
+def eligible_positions(player) -> list[str]:
+    positions = getattr(player, "eligible_positions", []) or []
+    if not isinstance(positions, list):
+        positions = [positions]
+    out = []
+    for p in positions:
+        p = getattr(p, "position", p)
+        out.append(str(p))
+    return out
+
+
+def player_to_info(p) -> PlayerInfo:
+    pct = getattr(p, "percent_owned", None)
+    pct_value = getattr(pct, "value", None) if pct is not None else getattr(p, "percent_owned_value", None)
+    pct_delta = getattr(pct, "delta", None) if pct is not None else None
+    own = getattr(p, "ownership", None)
+    return PlayerInfo(
+        name=player_name(p),
+        key=getattr(p, "player_key", "") or "",
+        team=getattr(p, "editorial_team_abbr", "") or "",
+        positions=eligible_positions(p),
+        status=str(getattr(p, "status", "") or ""),
+        status_full=str(getattr(p, "status_full", "") or ""),
+        injury_note=str(getattr(p, "injury_note", "") or ""),
+        percent_owned=float(pct_value or 0.0),
+        percent_owned_delta=float(pct_delta or 0.0),
+        ownership_type=str(getattr(own, "ownership_type", "") or "") if own is not None else "",
+        owner_team=str(getattr(own, "owner_team_name", "") or "") if own is not None else "",
+    )

@@ -37,7 +37,7 @@ class EmailSender:
         return bool(self.gmail_user and self.gmail_password and self.email_to)
 
     def send_briefing(self, subject: str, lineup_html: str, waiver_html: str,
-                      plain_text: str):
+                      plain_text: str, scouting_html: str = ""):
         """Send the daily briefing email.
 
         Args:
@@ -45,6 +45,7 @@ class EmailSender:
             lineup_html: HTML for the lineup section
             waiver_html: HTML for the waiver section
             plain_text: Plain-text fallback for clients that don't support HTML
+            scouting_html: HTML for the scouting section (goes first)
         """
         if not self.is_configured():
             logger.warning("Email not configured (missing GMAIL_USER, "
@@ -60,7 +61,7 @@ class EmailSender:
         msg.set_content(plain_text)
 
         # HTML version (preferred)
-        html_body = self._wrap_html(lineup_html, waiver_html)
+        html_body = self._wrap_html(scouting_html + lineup_html, waiver_html)
         msg.add_alternative(html_body, subtype="html")
 
         try:
@@ -144,6 +145,25 @@ class EmailSender:
     margin-top: 32px;
   }}
   a {{ color: #c8102e; }}
+  .opp {{
+    padding: 10px 12px;
+    margin: 10px 0;
+    border-radius: 4px;
+    background: #f7f7f7;
+    border-left: 3px solid #999;
+  }}
+  .opp.now {{ border-left-color: #c8102e; background: #fff5f5; }}
+  .opp.rising {{ border-left-color: #2d7a2d; }}
+  .opp.watch {{ border-left-color: #e0a800; }}
+  .opp.alert {{ border-left-color: #666; }}
+  .opp .head {{ font-weight: 600; }}
+  .opp .meta {{ color: #666; font-size: 13px; margin-top: 2px; }}
+  .opp .why {{ font-size: 13px; margin-top: 4px; }}
+  .tag {{
+    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    background: #e8e8e8; color: #333; margin-right: 4px;
+  }}
+  .small {{ color: #888; font-size: 12px; }}
 </style>
 </head>
 <body>
@@ -260,5 +280,107 @@ def format_plain_text(changes: list[dict], recommendations: list[dict]) -> str:
             lines.append(f"     +{pct:.0f}% upgrade · {rec.get('reason', '')}")
     else:
         lines.append("  No clear upgrades available.")
+    lines.append("")
+    return "\n".join(lines)
+
+# ── Scouting section ──────────────────────────────────────────────
+
+_SIGNAL_LABELS = {
+    "injury_return": "Back from injury",
+    "goalie_backup": "Goalie backup",
+    "goalie_start_share": "Taking starts",
+    "pp_promotion": "PP promotion",
+    "line_promotion": "Line promotion",
+    "regression_buy": "Buy low",
+    "ownership_surge": "Ownership surge",
+    "news": "News",
+    "pp_demotion": "PP demotion",
+    "line_demotion": "Line demotion",
+    "running_hot": "Running hot",
+    "injury_out": "Injured",
+}
+
+
+def _tags(entry: dict) -> str:
+    return "".join(f'<span class="tag">{_SIGNAL_LABELS.get(s, s)}</span>' for s in entry.get("signals", []))
+
+
+def _opp_html(entry: dict, css: str, league_id: str, team_id: str) -> str:
+    name = entry["player_name"]
+    team = entry.get("nhl_team", "")
+    pos = "/".join(p for p in entry.get("positions", []) if p not in ("BN", "IR", "IR+", "NA", "Util"))
+    head = f"{name} ({team}{', ' + pos if pos else ''})"
+    meta = []
+    if entry.get("drop_candidate"):
+        meta.append(f"drop candidate: {entry['drop_candidate']} (+{entry.get('gain', 0):.0f} value)")
+    if entry.get("games_next_7") is not None:
+        meta.append(f"{entry['games_next_7']} games next 7 days")
+    if entry.get("note"):
+        meta.append(entry["note"])
+    if entry.get("rostered_by") and not entry.get("note"):
+        meta.append(f"rostered by {entry['rostered_by']}")
+    why = "<br>".join(entry.get("evidence_lines", []))
+    if entry.get("source_url"):
+        why += f' <a href="{entry["source_url"]}">source</a>'
+    return (f'<div class="opp {css}"><div class="head">{head}</div>'
+            f'<div class="meta">{_tags(entry)} {" · ".join(meta)}</div>'
+            f'<div class="why">{why}</div></div>')
+
+
+def format_scouting_html(report: dict, league_id: str, team_id: str) -> str:
+    """Render the ranked scouting report as HTML sections."""
+    parts = []
+    url = f"https://hockey.fantasysports.yahoo.com/hockey/{league_id}/{team_id}/players"
+    for note in report.get("notes", []):
+        parts.append(f'<p class="small">⚠️ {note}</p>')
+    sections = [
+        ("act_now", "🚨 Act Now", "now"),
+        ("rising", "📈 Rising", "rising"),
+        ("watchlist", "👀 Watchlist", "watch"),
+        ("roster_alerts", "🌡️ Your Roster", "alert"),
+    ]
+    any_content = False
+    for key, title, css in sections:
+        entries = report.get(key, [])
+        if not entries:
+            continue
+        any_content = True
+        parts.append(f"<h3>{title}</h3>")
+        parts.extend(_opp_html(e, css, league_id, team_id) for e in entries)
+    still = report.get("still_available", [])
+    if still:
+        names = ", ".join(f"{e['player_name']} ({e.get('nhl_team', '')})" for e in still)
+        parts.append(f'<p class="small">Still available from earlier alerts: {names}</p>')
+    if not any_content and not still:
+        parts.append("<p>No new opportunities today.</p>")
+    body = "".join(parts)
+    return f"""<div class="section">
+  <h2>🔭 Scouting Report</h2>
+  {body}
+  <p style="margin-top:16px;font-size:13px;"><a href="{url}">Open the player list in Yahoo →</a></p>
+</div>"""
+
+
+def format_scouting_text(report: dict) -> str:
+    lines = ["SCOUTING REPORT", "-" * 40]
+    for note in report.get("notes", []):
+        lines.append(f"  ! {note}")
+    for key, title in (("act_now", "ACT NOW"), ("rising", "RISING"),
+                       ("watchlist", "WATCHLIST"), ("roster_alerts", "YOUR ROSTER")):
+        entries = report.get(key, [])
+        if not entries:
+            continue
+        lines.append(f"  {title}")
+        for e in entries:
+            sig = ", ".join(_SIGNAL_LABELS.get(s, s) for s in e.get("signals", []))
+            drop = f" / drop {e['drop_candidate']}" if e.get("drop_candidate") else ""
+            lines.append(f"    {e['player_name']} ({e.get('nhl_team', '')}) [{sig}]{drop}")
+            for ev in e.get("evidence_lines", []):
+                lines.append(f"      {ev}")
+    still = report.get("still_available", [])
+    if still:
+        lines.append("  Still available: " + ", ".join(e["player_name"] for e in still))
+    if len(lines) == 2:
+        lines.append("  No new opportunities today.")
     lines.append("")
     return "\n".join(lines)

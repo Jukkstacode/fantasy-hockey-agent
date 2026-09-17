@@ -31,7 +31,7 @@ class HotStreakScout(Scout):
             conf = 0.45 + min(0.3, (t.ratio - 1.0) * 0.15) + (0.15 if sus else 0.0)
             opps.append(Opportunity(
                 player_name=t.name, nhl_team=t.team, signal=HOT_STREAK,
-                evidence=f"Heating up: {t.label()}", confidence=min(0.9, conf),
+                evidence=f"Heating up: {t.short()}", confidence=min(0.9, conf),
                 urgency=URGENCY_WEEK, projected_value=ctx.value_of(t.name, t.position),
             ))
         for t in trends.cold_skaters():
@@ -39,7 +39,7 @@ class HotStreakScout(Scout):
                 continue
             opps.append(Opportunity(
                 player_name=t.name, nhl_team=t.team, signal=COLD_STREAK,
-                evidence=f"Cooling off: {t.label()}", confidence=0.5, urgency=URGENCY_WATCH,
+                evidence=f"Cooling off: {t.short()}", confidence=0.5, urgency=URGENCY_WATCH,
                 projected_value=ctx.value_of(t.name, t.position),
             ))
         return opps

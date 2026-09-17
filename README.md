@@ -98,6 +98,7 @@ fantasy-hockey-agent/
 ├── ranker.py            # Merges signals, scores them against your roster
 ├── scouts/              # Signal detectors (see SCOUTING_PLAN.md)
 │   ├── injury_return.py #   IR/O -> active since last run
+│   ├── drops.py         #   another manager dropped a player worth grabbing
 │   ├── goalie_injury.py #   starter hurt -> backup; start-share drift
 │   ├── deployment.py    #   PP-unit and line promotions from per-game TOI
 │   ├── regression.py    #   ixG vs goals: buy-low and running-hot
@@ -110,6 +111,7 @@ fantasy-hockey-agent/
 ├── scoring.py           # League fantasy-point formulas (skater and goalie)
 ├── nhl_stats.py         # Official NHL stats by player ID: season summaries + game logs (cached)
 ├── trend.py             # Per-game fantasy points, sparklines, hot/cold detection
+├── site_template.py     # Dashboard HTML for the hosted report (tiles, cards, sparklines, headshots)
 ├── site_writer.py       # Saves each briefing as a static page (state/site/) for hosting
 ├── decision_log.py      # Logs all decisions for review
 ├── requirements.txt

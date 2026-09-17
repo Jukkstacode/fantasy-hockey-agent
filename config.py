@@ -59,6 +59,7 @@ SCOUT_REGRESSION_XG_DIFF = float(os.getenv("SCOUT_REGRESSION_XG_DIFF", "3.0"))
 SCOUT_OWNERSHIP_JUMP = float(os.getenv("SCOUT_OWNERSHIP_JUMP", "10.0"))  # pct points
 SCOUT_GOALIE_START_SHARE = float(os.getenv("SCOUT_GOALIE_START_SHARE", "0.6"))
 SCOUT_REPEAT_DAYS = int(os.getenv("SCOUT_REPEAT_DAYS", "3"))         # don't re-alert within N days
+SCOUT_DROP_MIN_FPPG = float(os.getenv("SCOUT_DROP_MIN_FPPG", "2.5")) # a dropped player this good is "act now"
 SCOUT_MAX_ACT_NOW = int(os.getenv("SCOUT_MAX_ACT_NOW", "5"))
 SCOUT_MAX_RISING = int(os.getenv("SCOUT_MAX_RISING", "8"))
 SCOUT_MAX_WATCHLIST = int(os.getenv("SCOUT_MAX_WATCHLIST", "5"))

@@ -25,6 +25,7 @@ RUNNING_HOT = "running_hot"
 INJURY_OUT = "injury_out"
 HOT_STREAK = "hot_streak"
 COLD_STREAK = "cold_streak"
+DROPPED = "dropped"
 
 WARNING_SIGNALS = {PP_DEMOTION, LINE_DEMOTION, RUNNING_HOT, INJURY_OUT, COLD_STREAK}
 

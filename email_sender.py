@@ -312,6 +312,7 @@ def format_plain_text(changes: list[dict], recommendations: list[dict]) -> str:
 # ── Scouting section ──────────────────────────────────────────────
 
 _SIGNAL_LABELS = {
+    "dropped": "Just dropped",
     "injury_return": "Back from injury",
     "goalie_backup": "Goalie backup",
     "goalie_start_share": "Taking starts",

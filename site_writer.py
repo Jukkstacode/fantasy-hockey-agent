@@ -18,10 +18,18 @@ SITE_DIR = config.STATE_DIR / "site"
 KEEP_DAYS = 21
 
 
-def write_briefing(html_body: str, mode: str, when: datetime = None) -> Path:
-    """Save the rendered briefing; returns the path of index.html."""
+def write_briefing(html_body: str, mode: str, when: datetime = None, preview: bool = False) -> Path:
+    """Save the rendered briefing; returns the path of index.html.
+
+    preview=True (backtests) writes preview.html only and leaves index.html alone.
+    """
     when = when or datetime.now()
     SITE_DIR.mkdir(parents=True, exist_ok=True)
+    if preview:
+        path = SITE_DIR / "preview.html"
+        path.write_text(html_body, encoding="utf-8")
+        logger.info("Wrote preview page %s", path)
+        return path
     stamp = when.strftime("%Y-%m-%d-%H%M")
     dated = SITE_DIR / f"briefing-{stamp}-{mode}.html"
     dated.write_text(html_body, encoding="utf-8")
@@ -45,10 +53,11 @@ def _with_archive(body: str, now: datetime) -> str:
         f'<li><a href="{html.escape(f.name)}">{html.escape(f.name[len("briefing-"):-5])}</a></li>'
         for f in files
     )
-    from email_sender import _inline_styles
-    archive = _inline_styles(
-        f'<div class="section"><h2>Archive</h2><ul class="archive">{items}</ul>'
-        f'<p class="small">Generated {now:%A %B %d %Y %H:%M}. Older reports are removed after {KEEP_DAYS} days.</p></div>')
+    archive = (f'<details class="archive"><summary>Earlier reports ({len(files)})</summary><ul>{items}</ul>'
+               f'<p>Generated {now:%A %B %d %Y %H:%M}. Older reports are removed after {KEEP_DAYS} days.</p></details>')
+    slot = '<div class="footer-slot"></div>'
+    if slot in body:
+        return body.replace(slot, archive, 1)
     idx = body.find('<div class="footer"')
     if idx >= 0:
         return body[:idx] + archive + body[idx:]

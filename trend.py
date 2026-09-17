@@ -80,18 +80,40 @@ class Trend:
     def spark(self) -> str:
         return sparkline(self.per_game[-config.TREND_BASE_GAMES:])
 
-    def label(self, stale: bool = False) -> str:
+    def to_dict(self, stale: bool = False) -> dict:
+        return {
+            "per_game": [round(v, 2) for v in self.per_game[-(config.TREND_HOT_GAMES + config.TREND_BASE_GAMES):]],
+            "recent_avg": round(self.recent_avg, 2), "base_avg": round(self.base_avg, 2),
+            "season_avg": round(self.season_avg, 2), "games": self.games, "ratio": round(self.ratio, 2),
+            "arrow": self.arrow, "sustainable": self.sustainable, "is_goalie": self.is_goalie,
+            "recent_n": config.TREND_HOT_GAMES, "stale": stale,
+        }
+
+    def label(self, stale: bool = False, spark: bool = False) -> str:
+        """One-line summary. The text sparkline is opt-in (terminal only)."""
         unit = "FP/start" if self.is_goalie else "FPPG"
+        sp = f" {self.spark()}" if spark else ""
         if stale:
             return f"end of last season: {self.season_avg:.1f} {unit} over {self.games} games, " \
-                   f"last 5 {self.recent_avg:.1f} {self.spark()}"
+                   f"last 5 {self.recent_avg:.1f}{sp}"
         n = config.TREND_HOT_GAMES
-        s = f"{self.arrow} {self.spark()} last {n}: {self.recent_avg:.1f} {unit} vs {self.base_avg:.1f} prior"
+        s = f"{self.arrow}{sp} last {n}: {self.recent_avg:.1f} {unit} vs {self.base_avg:.1f} prior"
         if self.season_avg:
             s += f", {self.season_avg:.1f} over {self.games} {'starts' if self.is_goalie else 'games'}"
         sus = self.sustainable
         if self.ratio >= 1.2 and sus is not None:
-            s += " (shot volume up too)" if sus else " (same shot volume: luck-driven)"
+            s += ", shot volume up too" if sus else ", same shot volume"
+        return s
+
+    def short(self) -> str:
+        """For streak cards: the claim in plain words; the chart shows the rest."""
+        unit = "FP/start" if self.is_goalie else "FPPG"
+        n = config.TREND_HOT_GAMES
+        direction = "up" if self.ratio >= 1 else "down"
+        s = f"{self.recent_avg:.1f} {unit} over the last {n} games, {direction} from {self.base_avg:.1f}"
+        sus = self.sustainable
+        if self.ratio >= 1.2 and sus is not None:
+            s += ", with more shots" if sus else ", on the same shot volume"
         return s
 
 

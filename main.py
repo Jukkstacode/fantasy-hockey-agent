@@ -159,7 +159,7 @@ def run_trends(as_of: date):
         print("YOUR ROSTER")
         for p in roster:
             t = trends.get(p.name, is_goalie=p.is_goalie)
-            print(f"  {p.name:24} {t.label(stale=trends.stale) if t else 'no recent game data'}")
+            print(f"  {p.name:24} {t.label(stale=trends.stale, spark=True) if t else 'no recent game data'}")
     else:
         print("No roster available (Yahoo unreachable and no state/my_roster.txt).")
     hot = [] if trends.stale else [t for t in trends.hot_skaters()
@@ -167,7 +167,7 @@ def run_trends(as_of: date):
     print("\nHOTTEST SKATERS (not on your roster; check availability in Yahoo)"
           + ("\n  (no current-season games yet)" if trends.stale else ""))
     for t in hot[:15]:
-        print(f"  {t.name:24} {t.team:4} {t.label()}")
+        print(f"  {t.name:24} {t.team:4} {t.label(spark=True)}")
     print()
 
 
@@ -201,6 +201,26 @@ def friendly_yahoo_error(e: Exception) -> str:
         return ("Yahoo API access pending approval (403 'not authorized'). "
                 "Apply at https://sports.yahoo.com/developer/access/ — see DEPLOY.md.")
     return msg[:200]
+
+
+def next_nhl_game_date(nhl) -> str:
+    """Date of the next NHL game on or after today (for the preseason countdown)."""
+    today = date.today().isoformat()
+    try:
+        start = today
+        for _ in range(8):                       # up to ~8 weeks ahead
+            data = nhl._get(f"/schedule/{start}")
+            for week in data.get("gameWeek", []):
+                if week.get("date", "") < today:
+                    continue
+                if any(g.get("gameType") == 2 for g in week.get("games", [])):
+                    return week["date"]        # first regular-season game day
+            start = data.get("nextStartDate") or ""
+            if not start:
+                break
+    except Exception:
+        pass
+    return ""
 
 
 def merge_contracts(players: list) -> list:
@@ -304,6 +324,10 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
     if stats.season_is_stale:
         report.notes.append(f"No {stats.requested_season}-{stats.requested_season + 1} game data yet; "
                             f"values are from {stats.season}-{stats.season + 1}.")
+    report.meta["next_game_date"] = next_nhl_game_date(nhl)
+    report.meta["yahoo_mode"] = ("api" if (yahoo is not None and not yahoo_error) else
+                                 "web" if web_ok else "predraft" if predraft else "none")
+    report.meta["team_name"] = getattr(ctx, "team_name", "")
     if players and (web_ok or not roster_note):
         store.save("players", ctx.snapshot())
     result = report.to_dict()
@@ -362,13 +386,14 @@ def render_briefing_html(changes, recommendations, scouting) -> str:
     return EmailSender.wrap_html(scouting_html + lineup_html, waiver_html)
 
 
-def write_site_page(changes, recommendations, scouting, mode: str):
+def write_site_page(changes, recommendations, scouting, mode: str, preview: bool = False):
     """Always save the briefing as a static page (served at hockey.bimm.dev)."""
     try:
         from site_writer import write_briefing
-        write_briefing(render_briefing_html(changes, recommendations, scouting), mode)
+        from site_template import render_page
+        write_briefing(render_page(scouting or {}, changes, recommendations), mode, preview=preview)
     except Exception as e:
-        logger.warning("Could not write site page: %s", e)
+        logger.exception("Could not write site page: %s", e)
 
 
 def summary_lines(changes, recommendations, scouting) -> list[str]:
@@ -551,7 +576,7 @@ def main():
         if run_scouts:
             scouting = collect_scouting(yahoo, nhl, stats, store, as_of, yahoo_error)
 
-        write_site_page(changes, recommendations, scouting, args.mode)
+        write_site_page(changes, recommendations, scouting, args.mode, preview=(as_of != date.today()))
         if args.email:
             send_email_briefing(changes, recommendations, scouting, args.mode)
         else:

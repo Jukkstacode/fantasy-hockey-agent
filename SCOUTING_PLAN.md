@@ -23,6 +23,12 @@
 > Added 2026-09-16 evening: `trend.py` + HotStreakScout (fantasy-points-per-game
 > trend lines with sparklines on every card, `--trends` command).
 >
+> 2026-09-16 (night): hosted dashboard at hockey.bimm.dev (`site_template.py`:
+> stat tiles, headshot cards, SVG sparklines, roster table; `preview.html` is
+> a backtest render), email reduced to a link, Yahoo web-session reader
+> (`yahoo_web.py`) for rosters/free agents, and a DroppedPlayerScout that
+> flags players other managers just dropped.
+>
 > **Blocker:** on 2026-07-22 Yahoo put the Fantasy Sports API behind an
 > approval program and cut off existing apps (see DEPLOY.md). Every Yahoo
 > call returns 403 until the app is approved at

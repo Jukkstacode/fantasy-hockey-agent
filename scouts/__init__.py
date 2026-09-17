@@ -12,10 +12,12 @@ from scouts.regression import RegressionScout
 from scouts.ownership import OwnershipScout
 from scouts.news import NewsScout
 from scouts.dailyfaceoff import DailyFaceoffScout
+from scouts.drops import DroppedPlayerScout
 from scouts.hot_streak import HotStreakScout
 
 ALL_SCOUTS = [
     InjuryReturnScout,
+    DroppedPlayerScout,
     GoalieInjuryScout,
     DeploymentScout,
     RegressionScout,

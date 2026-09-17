@@ -32,13 +32,15 @@ class RankedReport:
         self.roster_alerts: list[dict] = []
         self.still_available: list[dict] = []
         self.notes: list[str] = []
+        self.roster: list[dict] = []        # every roster player with trend, for the page
+        self.meta: dict = {}
 
     def is_empty(self) -> bool:
         return not (self.act_now or self.rising or self.watchlist or self.roster_alerts)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in
-                ("act_now", "rising", "watchlist", "roster_alerts", "still_available", "notes")}
+                ("act_now", "rising", "watchlist", "roster_alerts", "still_available", "notes", "roster", "meta")}
 
 
 def merge_opportunities(opps: list[Opportunity]) -> list[Opportunity]:
@@ -87,6 +89,31 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
 
     dfo = ctx.extras.get("dfo", {})
     trends = ctx.extras.get("trends")
+    nhl = getattr(ctx.stats, "nhl", None)
+
+    def player_extras(name: str, is_goalie: bool, team: str = "") -> dict:
+        """Structured bits the page renders: trend, NHL id, headshot, line/PP unit."""
+        out = {"trend": None, "nhl_id": None, "headshot": None, "unit": None}
+        if trends is not None:
+            t = trends.get(name, is_goalie=is_goalie)
+            if t:
+                out["trend"] = t.to_dict(stale=trends.stale)
+        if nhl is not None:
+            pid = nhl.resolve_id(name)
+            if pid:
+                out["nhl_id"] = pid
+                row = nhl.official_row(name) or {}
+                abbrevs = (row.get("teamAbbrevs") or team or "").split(",")
+                tm = (abbrevs[-1] or "").strip() or team
+                if tm:
+                    out["headshot"] = f"https://assets.nhle.com/mugs/nhl/{nhl.requested_season}/{tm}/{pid}.png"
+                    out["team"] = tm
+        u = dfo.get(_normalize_name(name))
+        if u:
+            from scouts.dailyfaceoff import describe_unit
+            out["unit"] = describe_unit(u)
+        return out
+
     for o in merge_opportunities(opps):
         if trends is not None and not any(s in (HOT_STREAK, COLD_STREAK) for s in o.signals):
             t = trends.get(o.player_name, is_goalie=o.is_goalie)
@@ -101,6 +128,9 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
             if unit.get("team") and not o.nhl_team:
                 o.nhl_team = unit["team"]
         entry = o.to_dict()
+        entry.update(player_extras(o.player_name, o.is_goalie, o.nhl_team))
+        if entry.get("team") and not entry.get("nhl_team"):
+            entry["nhl_team"] = entry["team"]
         sig_key = ",".join(sorted(o.signals))
         entry["_sig"] = sig_key
         if o.is_warning:
@@ -174,6 +204,29 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
     for section in (report.act_now, report.rising, report.watchlist, report.still_available, report.roster_alerts):
         for e in section:
             e.pop("_sig", None)
+
+    # Roster table for the page: every player, with trend and status
+    alert_names = {_normalize_name(e["player_name"]): e for e in report.roster_alerts}
+    for p in ctx.my_roster:
+        ex = player_extras(p.name, p.is_goalie, p.team)
+        alert = alert_names.get(_normalize_name(p.name))
+        report.roster.append({
+            "name": p.name, "team": ex.get("team") or p.team, "positions": [x for x in p.positions if x not in BENCH_LIKE],
+            "status": p.status, "status_full": p.status_full, "is_goalie": p.is_goalie,
+            "value": round(ctx.value_of(p.name, "G" if p.is_goalie else "") / 10.0, 2),
+            "alert": (alert["signals"][0] if alert else None), "alert_text": (alert["evidence_lines"][0] if alert else None),
+            **ex,
+        })
+    report.roster.sort(key=lambda r: (r["is_goalie"], -(r["value"] or 0)))
+    report.meta = {
+        "as_of": ctx.as_of.isoformat(), "yahoo_ok": ctx.yahoo_ok,
+        "trend_source": getattr(trends, "source", "") if trends is not None else "",
+        "trend_stale": bool(getattr(trends, "stale", False)) if trends is not None else False,
+        "values_source": getattr(ctx.stats, "_values_source", ""),
+        "news_enabled": bool(config.ANTHROPIC_API_KEY),
+        "dfo_date": ctx.store.load("dfo_lines", {}).get("_date", ""),
+        "roster_size": len(ctx.my_roster),
+    }
 
     # Prune old entries from the shown-log
     shown = {k: v for k, v in shown.items() if v.get("date", "") >= cutoff}

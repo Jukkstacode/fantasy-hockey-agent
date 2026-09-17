@@ -19,6 +19,8 @@ Three jobs:
 Data is fetched once per run and cached in memory.
 """
 
+import contextlib
+import io
 import logging
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -457,10 +459,11 @@ class StatsProvider:
         key = ("skater", situation, start, end_date)
         if key not in self._game_log_cache:
             try:
-                df = pyhockey.skater_games(
-                    season=self.season, situation=situation,
-                    start_date=start.isoformat(), end_date=end_date.isoformat(), quiet=True,
-                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    df = pyhockey.skater_games(
+                        season=self.season, situation=situation,
+                        start_date=start.isoformat(), end_date=end_date.isoformat(), quiet=True,
+                    )
             except Exception as e:
                 logger.warning("skater_games(%s) failed: %s", situation, e)
                 df = pl.DataFrame()
@@ -475,10 +478,11 @@ class StatsProvider:
         key = ("goalie", start, end_date)
         if key not in self._game_log_cache:
             try:
-                df = pyhockey.goalie_games(
-                    season=self.season, start_date=start.isoformat(),
-                    end_date=end_date.isoformat(), quiet=True,
-                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    df = pyhockey.goalie_games(
+                        season=self.season, start_date=start.isoformat(),
+                        end_date=end_date.isoformat(), quiet=True,
+                    )
             except Exception as e:
                 logger.warning("goalie_games failed: %s", e)
                 df = pl.DataFrame()

@@ -20,6 +20,13 @@ from scouts.base import PlayerInfo
 
 logger = logging.getLogger(__name__)
 
+# yfpy attaches its own handler and resets the level at import time; quiet it
+# here (after the import) so errors are reported once, by this module.
+for _name in ("yfpy", "yfpy.query"):
+    _l = logging.getLogger(_name)
+    _l.setLevel(logging.CRITICAL)
+    _l.propagate = False
+
 YAHOO_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
 PAGE = 25   # Yahoo's hard cap per players request
 

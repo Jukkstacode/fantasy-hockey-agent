@@ -139,14 +139,14 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
             report.watchlist.append(entry)
             continue
 
-        # Repeat suppression
+        # Repeat suppression: same player, same signals, shown within the last
+        # few days and not urgent -> one-line "still available" mention instead
         sig_key = ",".join(sorted(o.signals))
+        entry["_sig"] = sig_key
         prev = shown.get(_normalize_name(o.player_name))
         if prev and prev.get("signals") == sig_key and prev.get("date", "") >= cutoff and o.urgency != URGENCY_NOW:
             report.still_available.append(entry)
             continue
-        shown[_normalize_name(o.player_name)] = {"signals": sig_key, "date": today}
-
         if o.urgency == URGENCY_NOW:
             report.act_now.append(entry)
         elif o.urgency == URGENCY_WEEK:
@@ -160,6 +160,16 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
     report.rising = report.rising[:config.SCOUT_MAX_RISING]
     report.watchlist = report.watchlist[:config.SCOUT_MAX_WATCHLIST]
     report.still_available = report.still_available[:6]
+
+    # Only players actually displayed count as "shown" for later suppression
+    for section in (report.act_now, report.rising, report.watchlist):
+        for e in section:
+            shown[_normalize_name(e["player_name"])] = {"signals": e["_sig"], "date": today}
+    for e in report.still_available:
+        shown[_normalize_name(e["player_name"])]["date"] = today   # keep suppressing while listed
+    for section in (report.act_now, report.rising, report.watchlist, report.still_available, report.roster_alerts):
+        for e in section:
+            e.pop("_sig", None)
 
     # Prune old entries from the shown-log
     shown = {k: v for k, v in shown.items() if v.get("date", "") >= cutoff}

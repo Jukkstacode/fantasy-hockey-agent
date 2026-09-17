@@ -53,7 +53,8 @@ def setup_logging(level: str = None):
             logging.FileHandler(config.LOG_DIR / "agent.log"),
         ],
     )
-    logging.getLogger("yfpy.query").setLevel(logging.ERROR)
+    logging.getLogger("yfpy.query").setLevel(logging.CRITICAL)
+    logging.getLogger("yfpy.query").propagate = False
     warnings.filterwarnings("ignore", module="yfpy")
     warnings.filterwarnings("ignore", module="pyhockey")
     logging.getLogger("httpx2").setLevel(logging.WARNING)
@@ -183,6 +184,14 @@ def collect_waivers(yahoo, nhl, stats) -> list[dict]:
     recommendations = WaiverManager(yahoo, nhl, stats).evaluate_moves()
     decision_log.log_waiver_moves(recommendations)
     return recommendations
+
+
+def friendly_yahoo_error(e: Exception) -> str:
+    msg = str(e)
+    if "not authorized to perform this action" in msg:
+        return ("Yahoo API access pending approval (403 'not authorized'). "
+                "Apply at https://sports.yahoo.com/developer/access/ — see DEPLOY.md.")
+    return msg[:200]
 
 
 def load_roster_file() -> list:
@@ -377,7 +386,8 @@ def main():
 
     try:
         nhl = NHLClient()
-        store = StateStore()
+        # Backtests (--as-of) keep their own state so they never pollute real runs
+        store = StateStore() if as_of == date.today() else StateStore(config.STATE_DIR / "backtest")
         stats = StatsProvider(as_of=as_of)
 
         # Yahoo can fail (expired app permission, outage). Degrade instead of dying:
@@ -388,9 +398,9 @@ def main():
             yahoo = YahooClient()
             league = yahoo.get_league_scoring()
         except Exception as e:
-            yahoo_error = str(e)
-            logger.error("Yahoo unavailable: %s", e)
-            decision_log.log_error("yahoo", yahoo_error)
+            yahoo_error = friendly_yahoo_error(e)
+            logger.error("Yahoo unavailable: %s", yahoo_error)
+            decision_log.log_error("yahoo", str(e))
             yahoo, league = None, None
         stats.configure_scoring(league)
 

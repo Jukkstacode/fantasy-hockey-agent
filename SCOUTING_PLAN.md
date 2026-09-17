@@ -1,11 +1,27 @@
 # Scouting Agent Plan: Finding Pickups Before Your League Does
 
-> **Status (2026-09-15):** phases 0 through 5 are implemented. `scouts/`,
+> **Status (2026-09-16):** phases 0 through 6a are implemented. `scouts/`,
 > `ranker.py`, `state_store.py`, `opportunity.py` and the league-aware
-> `stats_provider.py` exist and the briefing has a Scouting Report section.
-> Not yet done: DailyFaceoff scraping and Yahoo write-back (phase 6). The
-> news scout runs only when `ANTHROPIC_API_KEY` is set. Yahoo auth on the
-> server currently returns 403 and needs re-authorization (see DEPLOY.md).
+> `stats_provider.py` exist, the briefing has a Scouting Report section,
+> the DailyFaceoff scout diffs line combinations daily and annotates every
+> opportunity with the player's current line and PP unit, and `--draft`
+> prints the section 9 draft board. Yahoo write-back (section 3.2) is off
+> the table: the app has Read scope only. The news scout runs only when
+> `ANTHROPIC_API_KEY` is set. `python main.py --auth` now uses the app's
+> registered redirect URI (Yahoo dropped the old "oob" flow).
+>
+> Valuation is now the league's points formula (`scoring.py`, from
+> web-app/js/scoring.js) rather than category z-scores; trend lines, the
+> ranker, and the draft board all use it.
+>
+> Added 2026-09-16 evening: `trend.py` + HotStreakScout (fantasy-points-per-game
+> trend lines with sparklines on every card, `--trends` command).
+>
+> **Blocker:** on 2026-07-22 Yahoo put the Fantasy Sports API behind an
+> approval program and cut off existing apps (see DEPLOY.md). Every Yahoo
+> call returns 403 until the app is approved at
+> https://sports.yahoo.com/developer/access/. Until then, `state/my_roster.txt`
+> stands in for the roster and free-agent availability is unknown.
 
 This guide extends the existing daily-briefing agent into a **scouting system** that
 watches for the situations that create fantasy value and tells you when an available
@@ -264,10 +280,11 @@ other scout missed, and it tells you how many hours you have left before he's go
 
 ## 3. Getting more out of the Yahoo API
 
-Your `yahoo_client.py` says the API is read-only. **That is not correct.** The Yahoo
-Fantasy Sports API supports roster changes and add/drop transactions when the app is
-registered with Read/Write permission, which yours is. The `yfpy` library simply
-doesn't wrap the write endpoints.
+The Yahoo Fantasy Sports API supports roster changes and add/drop transactions,
+but only with the `fspt-w` (Read/Write) scope. **Yahoo's current developer portal
+offers new apps only `fspt-r` (Read) and marks the Fantasy scope as
+whitelist-only**, and your app shows Read only. So the write-back ideas in 3.2
+are not available unless Yahoo whitelists the app; the agent stays advisory.
 
 ### 3.1 Reads that would improve the scouts today
 
@@ -295,9 +312,9 @@ save percentage, shutouts), compute z-scores per category across the player pool
 sum the z-scores for the categories your league uses. That is what every serious
 ranking tool does, and it makes "would this player beat mine" an honest comparison.
 
-### 3.2 Writes (optional, for later)
+### 3.2 Writes (not available with a Read-only app)
 
-If you decide you want the agent to act instead of advise:
+Kept for reference in case Yahoo grants write scope. If it ever does:
 
 | Action | Method | Endpoint |
 |---|---|---|

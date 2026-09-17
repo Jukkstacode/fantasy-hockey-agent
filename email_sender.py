@@ -298,6 +298,8 @@ _SIGNAL_LABELS = {
     "line_demotion": "Line demotion",
     "running_hot": "Running hot",
     "injury_out": "Injured",
+    "hot_streak": "Heating up",
+    "cold_streak": "Cooling off",
 }
 
 

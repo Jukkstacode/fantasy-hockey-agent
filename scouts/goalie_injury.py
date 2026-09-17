@@ -43,6 +43,8 @@ class GoalieInjuryScout(Scout):
         df = ctx.stats.get_goalie_games(days=35)
         if df.is_empty():
             return {}
+        if "situation" in df.columns:
+            df = df.filter(pl.col("situation") == "all")   # 'all' already totals ev/pp/pk
         toi = df.group_by(["team", "gameID", "gameDate", "name"]).agg(
             pl.col("iceTime").sum().alias("toi")
         )

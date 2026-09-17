@@ -27,6 +27,9 @@ from typing import Optional
 import polars as pl
 import pyhockey
 
+import config
+import scoring
+
 logger = logging.getLogger(__name__)
 
 MIN_GAMES_CURRENT = 10   # trust current-season values after this many games
@@ -120,6 +123,10 @@ class StatsProvider:
         self._game_totals: Optional[dict[str, dict]] = None    # name key -> shots/hits totals
         self._categories: list[str] = []
         self._cat_values: dict[str, float] = {}    # name key -> category-weighted value
+        self._points_mode = False
+        self._skater_fppg: dict[str, float] = {}   # name key -> season fantasy points per game
+        self._goalie_fppg: dict[str, tuple[float, int]] = {}   # name key -> (FP per start, starts)
+        self._team_results: Optional[dict] = None  # (team, date) -> (GF, GA)
         self._game_log_cache: dict[tuple, pl.DataFrame] = {}
 
     # ── Loading ──────────────────────────────────────────────────
@@ -240,6 +247,83 @@ class StatsProvider:
 
     # ── League-aware scoring ─────────────────────────────────────
 
+    def configure_scoring(self, league: Optional[dict] = None):
+        """Pick points or category valuation from league settings / config."""
+        scoring_type = (league or {}).get("scoring_type", "") or ""
+        use_points = config.VALUATION == "points" or "point" in scoring_type.lower()
+        if use_points:
+            self.set_points_scoring()
+        else:
+            cats = (league or {}).get("categories") or config.LEAGUE_CATEGORIES
+            self.set_league_categories(cats)
+
+    def set_points_scoring(self):
+        """Value = projected fantasy points per game under the league formula (x10)."""
+        self.load()
+        self._points_mode = True
+        self._cat_values = {}
+        seen = set()
+        for row in self._skaters.values():
+            name = row["name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            gp = row.get("gamesPlayed") or 0
+            if gp <= 0:
+                continue
+            fp = scoring.skater_points_from_season_rows(
+                row, self._lookup(self._skaters_by_sit.get("ev", {}), name),
+                self._lookup(self._skaters_by_sit.get("pp", {}), name),
+                self._lookup(self._skaters_by_sit.get("pk", {}), name))
+            for key in name_keys(name):
+                self._skater_fppg[key] = fp / gp
+        self._compute_goalie_points()
+        logger.info("Points valuation ready: %d skaters, %d goalies", len(seen), len(self._goalie_fppg) // 3 or len(self._goalie_fppg))
+
+    def team_results(self) -> dict:
+        """(team, gameDate iso) -> (goalsFor, goalsAgainst) for the season."""
+        if self._team_results is None:
+            self._team_results = {}
+            try:
+                tg = pyhockey.team_games(season=self.season, situation="all", quiet=True)
+                for r in tg.select(["team", "gameDate", "goalsFor", "goalsAgainst"]).iter_rows(named=True):
+                    self._team_results[(r["team"], str(r["gameDate"]))] = (r["goalsFor"] or 0, r["goalsAgainst"] or 0)
+            except Exception as e:
+                logger.warning("team_games load failed (goalie wins unavailable): %s", e)
+        return self._team_results
+
+    def goalie_game_points(self, days: Optional[int] = None, end_date: Optional[date] = None) -> list[dict]:
+        """Per-start fantasy points for every goalie: [{name, team, date, fp, ga, sa, toi, win, so}]."""
+        gg = self.get_goalie_games(days=days or 400, end_date=end_date)
+        if gg.is_empty():
+            return []
+        if "situation" in gg.columns:
+            gg = gg.filter(pl.col("situation") == "all")
+        results = self.team_results()
+        out = []
+        for r in gg.select(["name", "team", "gameDate", "iceTime", "shotsAgainst", "goalsAgainst"]).sort("gameDate").iter_rows(named=True):
+            toi = float(r["iceTime"] or 0)
+            if toi < 30:
+                continue
+            gf, ga_team = results.get((r["team"], str(r["gameDate"])), (None, None))
+            win = 1 if (gf is not None and gf > ga_team) else 0
+            ga = int(r["goalsAgainst"] or 0)
+            so = 1 if (ga == 0 and toi >= 58) else 0
+            fp = scoring.goalie_points(win, ga, int(r["shotsAgainst"] or 0), so)
+            out.append({"name": r["name"], "team": r["team"], "date": str(r["gameDate"]), "fp": fp,
+                        "ga": ga, "sa": int(r["shotsAgainst"] or 0), "toi": toi, "win": win, "so": so})
+        return out
+
+    def _compute_goalie_points(self):
+        totals: dict[str, list] = {}
+        for g in self.goalie_game_points():
+            t = totals.setdefault(g["name"], [0.0, 0])
+            t[0] += g["fp"]
+            t[1] += 1
+        for name, (fp, n) in totals.items():
+            for key in name_keys(name):
+                self._goalie_fppg[key] = (fp / n, n)
+
     def set_league_categories(self, categories: list[str], negative: set[str] = None):
         """Enable category-weighted valuation using the league's stat categories."""
         self._categories = [c for c in categories if c in SKATER_CATEGORY_MAP]
@@ -309,6 +393,12 @@ class StatsProvider:
 
     def get_skater_value(self, player_name: str) -> float:
         self.load()
+        if self._points_mode:
+            for key in name_keys(player_name):
+                if key in self._skater_fppg:
+                    return round(self._skater_fppg[key] * 10.0, 2)
+            row, _ = self.get_skater_stats_with_fallback(player_name)
+            return self._legacy_skater_value(row)
         if self._cat_values:
             for key in name_keys(player_name):
                 if key in self._cat_values:
@@ -326,8 +416,15 @@ class StatsProvider:
         return round(pph * 10.0 + xg * 2.0, 2)
 
     def get_goalie_value(self, player_name: str) -> float:
-        """Goals Saved Above Expected per game, plus a workload bonus."""
+        """Points mode: fantasy points per start (x10), discounted for tiny samples.
+        Otherwise Goals Saved Above Expected per game plus a workload bonus."""
         self.load()
+        if self._points_mode:
+            for key in name_keys(player_name):
+                if key in self._goalie_fppg:
+                    fp, n = self._goalie_fppg[key]
+                    return round(fp * 10.0 * min(1.0, n / 10.0), 2)
+            return 0.0
         stats = self._lookup(self._goalies, player_name)
         if not stats or (stats.get("gamesPlayed") or 0) < 3:
             self._load_previous()
@@ -339,6 +436,10 @@ class StatsProvider:
             return 0.0
         gsax = (stats.get("xGoals") or 0.0) - (stats.get("goals") or 0.0)
         return round((gsax / gp) * 20.0 + gp * 0.5, 2)
+
+    @property
+    def points_mode(self) -> bool:
+        return self._points_mode
 
     def get_player_value(self, player_name: str, position: str) -> float:
         if "G" in (position or "").upper():

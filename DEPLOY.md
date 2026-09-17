@@ -145,6 +145,19 @@ docker build -t fantasy-hockey-agent .
 
 The auth tokens, logs, and scout state persist because they're mounted as volumes.
 
+## If Yahoo returns 403 "This application is not authorized to perform this action"
+
+Since 2026-07-22 Yahoo gates the Fantasy Sports API behind an approval
+process. Apps created before that lost access, even with the permission
+still checked in the portal, and OAuth keeps working (tokens mint and
+refresh) so the failure only shows up on API calls. Apply at
+https://sports.yahoo.com/developer/access/ and wait for approval; nothing in
+this repo can work around it.
+
+While waiting, put your roster in `state/my_roster.txt` (one name per line,
+add `, G` after goalies) and the scouts will still compare opportunities
+against it. Free-agent availability stays unknown until access is restored.
+
 ## Re-authorizing Yahoo from the server (no browser)
 
 If the API starts returning "This application is not authorized to perform this
@@ -156,8 +169,18 @@ cd ~/fantasy-hockey-agent
 ./dev.sh python main.py --auth
 ```
 
-It prints an authorization URL. Open it on any device, approve, paste the
-verifier code back into the terminal. The new token is saved to `auth/.env`.
+It prints an authorization URL. Open it on any device and approve. Yahoo
+redirects to the app's registered Redirect URI (`https://localhost:8080/` by
+default; set `YAHOO_REDIRECT_URI` in `.env` if yours differs). That page won't
+load, but the address bar contains `?code=...`. Paste the code or the whole
+URL back into the terminal. Non-interactively:
+
+```bash
+./dev.sh python main.py --auth --url-only          # print the URL
+./dev.sh python main.py --auth --code '<code-or-url>'
+```
+
+The new token is saved to `auth/.env`; the old one is kept as a `.bak` file.
 
 ## Local development on the server
 

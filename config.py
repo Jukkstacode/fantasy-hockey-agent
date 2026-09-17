@@ -21,6 +21,8 @@ YAHOO_CONSUMER_SECRET = os.getenv("YAHOO_CONSUMER_SECRET", "")
 YAHOO_LEAGUE_ID = os.getenv("YAHOO_LEAGUE_ID", "")
 YAHOO_GAME_CODE = os.getenv("YAHOO_GAME_CODE", "nhl")
 YAHOO_TEAM_ID = os.getenv("YAHOO_TEAM_ID", "")
+# Must match a Redirect URI registered on the app at developer.yahoo.com/apps
+YAHOO_REDIRECT_URI = os.getenv("YAHOO_REDIRECT_URI", "https://localhost:8080/")
 
 
 # Agent behavior
@@ -33,6 +35,9 @@ WAIVER_MAX_ADDS_PER_WEEK = int(os.getenv("WAIVER_MAX_ADDS_PER_WEEK", "3"))
 
 # Lineup optimizer
 MATCHUP_GAA_THRESHOLD = float(os.getenv("MATCHUP_GAA_THRESHOLD", "3.0"))
+
+# Fallback roster while the Yahoo API is unavailable: one player name per line
+ROSTER_FILE = BASE_DIR / "state" / "my_roster.txt"
 
 # Scouts (see SCOUTING_PLAN.md)
 SCOUT_RECENT_GAMES = int(os.getenv("SCOUT_RECENT_GAMES", "3"))       # "now" window
@@ -49,6 +54,38 @@ SCOUT_MAX_ACT_NOW = int(os.getenv("SCOUT_MAX_ACT_NOW", "5"))
 SCOUT_MAX_RISING = int(os.getenv("SCOUT_MAX_RISING", "8"))
 SCOUT_MAX_WATCHLIST = int(os.getenv("SCOUT_MAX_WATCHLIST", "8"))
 SCOUT_AVAILABLE_POOL = int(os.getenv("SCOUT_AVAILABLE_POOL", "300")) # Yahoo available players to scan
+
+# League scoring. VALUATION=points ranks players by projected fantasy points
+# per game under the formulas below (web-app/js/scoring.js is the source of
+# truth); VALUATION=categories uses category z-scores instead.
+VALUATION = os.getenv("VALUATION", "points").lower()
+
+
+def _weights(env: str, default: str) -> dict:
+    out = {}
+    for pair in os.getenv(env, default).split(","):
+        if ":" in pair:
+            k, v = pair.split(":", 1)
+            try:
+                out[k.strip().upper()] = float(v)
+            except ValueError:
+                pass
+    return out
+
+
+# Skater FP = 3*G + 2*A + 1*(+/-) + 0.25*PIM + 1*PPP + 1*SHP + 1.5*GWG
+FANTASY_POINTS_WEIGHTS = _weights("FANTASY_POINTS_WEIGHTS", "G:3,A:2,+/-:1,PIM:0.25,PPP:1,SHP:1,GWG:1.5")
+# Goalie FP = 3*W - 1.5*GA + 0.2*(SA - GA) + 6*SO
+GOALIE_POINTS_WEIGHTS = _weights("GOALIE_POINTS_WEIGHTS", "W:3,GA:-1.5,SV:0.2,SO:6")
+TREND_HOT_GAMES = int(os.getenv("TREND_HOT_GAMES", "5"))       # recent window
+TREND_BASE_GAMES = int(os.getenv("TREND_BASE_GAMES", "20"))    # comparison window
+TREND_HOT_RATIO = float(os.getenv("TREND_HOT_RATIO", "1.5"))   # recent / baseline
+TREND_MIN_FPPG = float(os.getenv("TREND_MIN_FPPG", "3.0"))     # recent FPPG floor
+
+# Fallback scoring categories when Yahoo league settings can't be read
+# (standard Yahoo H2H categories). Overridden by the league's real settings.
+LEAGUE_CATEGORIES = [c.strip() for c in os.getenv(
+    "LEAGUE_CATEGORIES", "G,A,+/-,PIM,PPP,SOG,HIT,BLK,W,GAA,SV%,SHO").split(",") if c.strip()]
 
 # News scout (Claude API). Leave ANTHROPIC_API_KEY unset to skip news classification.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

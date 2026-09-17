@@ -66,6 +66,16 @@ python main.py --dry-run
 # Live run (makes actual roster moves)
 python main.py
 
+# Scouting report only, or a backtest on a past date
+python main.py --scout-only
+python main.py --scout-only --as-of 2026-03-20
+
+# Fantasy-points-per-game trend lines for your roster and the hottest skaters
+python main.py --trends
+
+# Draft board (uses last season until the new one has data)
+python main.py --draft --top 150 --draft-md state/draft_board.md
+
 # Run as a daily cron job
 crontab -e
 # Add: 0 9 * * * /path/to/venv/bin/python /path/to/main.py >> /path/to/agent.log 2>&1
@@ -90,8 +100,13 @@ fantasy-hockey-agent/
 │   ├── goalie_injury.py #   starter hurt -> backup; start-share drift
 │   ├── deployment.py    #   PP-unit and line promotions from per-game TOI
 │   ├── regression.py    #   ixG vs goals: buy-low and running-hot
+│   ├── hot_streak.py    #   FPPG trend: heating up (pickups) / cooling off (roster)
 │   ├── ownership.py     #   Yahoo ownership surges
+│   ├── dailyfaceoff.py  #   Line/PP-unit changes from DailyFaceoff pages
 │   └── news.py          #   RSS feeds classified by Claude into typed events
+├── draft_board.py       # --draft: category-weighted board with PP1/COLD/HOT flags
+├── scoring.py           # League fantasy-point formulas (skater and goalie)
+├── trend.py             # Per-game fantasy points, sparklines, hot/cold detection
 ├── decision_log.py      # Logs all decisions for review
 ├── requirements.txt
 ├── .env.example
@@ -115,7 +130,12 @@ fantasy-hockey-agent/
 - Each scout compares today against the previous run's snapshot in `state/`
   and emits opportunities; the ranker scores them against your weakest
   compatible roster player and groups them as Act Now / Rising / Watchlist
-- Player values are category-weighted z-scores using your league's actual
-  scoring categories, falling back to last season early in the year
+- Player values are projected fantasy points per game under the league's
+  points formula (`scoring.py`; weights in `.env`), falling back to last
+  season early in the year. `VALUATION=categories` switches to z-scores
+  for category leagues
+- Every player card carries a trend line: sparkline of fantasy points per
+  game, last 5 vs prior 20, with a note on whether shot volume rose too
+  (`FANTASY_POINTS_WEIGHTS` sets the points formula)
 - The news scout needs `ANTHROPIC_API_KEY`; everything else runs without it
 - Full design: `SCOUTING_PLAN.md`

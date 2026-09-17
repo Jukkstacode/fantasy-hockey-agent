@@ -1,9 +1,9 @@
 """Yahoo Fantasy API client wrapping yfpy.
 
-Reads roster, league settings, available players and ownership data. The
-Yahoo API also supports writes (lineup PUT, add/drop POST) with the
-Read/Write app permission, but this agent stays advisory: it recommends,
-you click. See SCOUTING_PLAN.md section 3.2 if you want to change that.
+Reads roster, league settings, available players and ownership data.
+Write access (lineup PUT, add/drop POST) needs the fspt-w scope, which
+Yahoo currently grants only to whitelisted apps; this app has Read only,
+so the agent stays advisory: it recommends, you click.
 """
 
 import logging
@@ -37,7 +37,9 @@ def _headless() -> bool:
 class YahooClient:
     """Wrapper around yfpy for Yahoo Fantasy Hockey."""
 
-    def __init__(self):
+    def __init__(self, fresh_auth: bool = False):
+        if fresh_auth:
+            self._retire_saved_token()
         self.query = YahooFantasySportsQuery(
             league_id=config.YAHOO_LEAGUE_ID,
             game_code=config.YAHOO_GAME_CODE,
@@ -49,6 +51,18 @@ class YahooClient:
         )
         self._scoring: Optional[dict] = None
         self._league_key: Optional[str] = None
+
+    @staticmethod
+    def _retire_saved_token():
+        """Move the saved token aside so yfpy runs the full OAuth flow again."""
+        token_file = config.AUTH_DIR / ".env"
+        if token_file.exists():
+            backup = config.AUTH_DIR / f".env.bak-{datetime.now():%Y%m%d-%H%M%S}"
+            token_file.rename(backup)
+            logger.info("Saved previous Yahoo token to %s", backup.name)
+        for var in ("YAHOO_ACCESS_TOKEN", "YAHOO_REFRESH_TOKEN", "YAHOO_GUID",
+                    "YAHOO_TOKEN_TIME", "YAHOO_TOKEN_TYPE"):
+            os.environ.pop(var, None)
 
     @property
     def league_key(self) -> str:

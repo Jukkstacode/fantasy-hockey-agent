@@ -67,6 +67,12 @@ class ScoutContext:
         self.yahoo_ok = yahoo_ok
         self.players: dict[str, PlayerInfo] = {}       # name key -> info
         self.my_roster: list[PlayerInfo] = []
+        self.extras: dict = {}                          # scout-to-scout shared data
+        try:
+            from trend import TrendProvider
+            self.extras["trends"] = TrendProvider(stats)
+        except Exception as e:
+            logger.warning("Trend provider unavailable: %s", e)
         for p in players or []:
             self.add_player(p)
         prev = store.load("players", {})

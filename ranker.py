@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 import config
 from opportunity import (Opportunity, GOALIE_BACKUP, GOALIE_START_SHARE, INJURY_RETURN,
-                         URGENCY_NOW, URGENCY_WEEK, URGENCY_WATCH)
+                         HOT_STREAK, COLD_STREAK, URGENCY_NOW, URGENCY_WEEK, URGENCY_WATCH)
 from scouts.base import ScoutContext
 from stats_provider import _normalize_name
 
@@ -85,7 +85,21 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
     cutoff = (ctx.as_of - timedelta(days=config.SCOUT_REPEAT_DAYS)).isoformat()
     today = ctx.as_of.isoformat()
 
+    dfo = ctx.extras.get("dfo", {})
+    trends = ctx.extras.get("trends")
     for o in merge_opportunities(opps):
+        if trends is not None and not any(s in (HOT_STREAK, COLD_STREAK) for s in o.signals):
+            t = trends.get(o.player_name, is_goalie=o.is_goalie)
+            if t:
+                o.evidence_lines.append(f"Trend: {t.label()}")
+        unit = dfo.get(_normalize_name(o.player_name))
+        if unit:
+            from scouts.dailyfaceoff import describe_unit
+            desc = describe_unit(unit)
+            if desc:
+                o.evidence_lines.append(f"DailyFaceoff: {desc}")
+            if unit.get("team") and not o.nhl_team:
+                o.nhl_team = unit["team"]
         entry = o.to_dict()
         if o.is_warning:
             entry["score"] = round(o.confidence * URGENCY_MULT.get(o.urgency, 1.0), 2)
@@ -151,5 +165,6 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
     shown = {k: v for k, v in shown.items() if v.get("date", "") >= cutoff}
     ctx.store.save("opportunities_shown", shown)
     if not ctx.yahoo_ok:
-        report.notes.append("Yahoo was unreachable: availability and drop candidates are unknown.")
+        report.notes.append("Yahoo was unreachable: free-agent availability is unknown"
+                            + ("." if ctx.my_roster else "; drop candidates need a roster."))
     return report

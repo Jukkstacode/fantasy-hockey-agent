@@ -177,6 +177,12 @@ fallback still works:
 
 Set `MY_GM` in `.env` to your GM name so your contracts count as your roster.
 
+## Email modes
+
+`EMAIL_MODE` in `.env`: `link` (default) sends a short summary with a button to
+the hosted report at `REPORT_URL`; `full` sends the whole report; `none` writes
+the page only.
+
 ## Hosting the latest report (hockey.bimm.dev)
 
 Every run writes the briefing to `state/site/index.html` (dated copies kept

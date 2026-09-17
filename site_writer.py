@@ -45,9 +45,11 @@ def _with_archive(body: str, now: datetime) -> str:
         f'<li><a href="{html.escape(f.name)}">{html.escape(f.name[len("briefing-"):-5])}</a></li>'
         for f in files
     )
-    archive = (f'<div class="section"><h2>Archive</h2><ul class="archive">{items}</ul>'
-               f'<p class="small">Generated {now:%A %B %d %Y %H:%M}. Older reports are removed after {KEEP_DAYS} days.</p></div>')
-    marker = '<div class="footer">'
-    if marker in body:
-        return body.replace(marker, archive + marker, 1)
+    from email_sender import _inline_styles
+    archive = _inline_styles(
+        f'<div class="section"><h2>Archive</h2><ul class="archive">{items}</ul>'
+        f'<p class="small">Generated {now:%A %B %d %Y %H:%M}. Older reports are removed after {KEEP_DAYS} days.</p></div>')
+    idx = body.find('<div class="footer"')
+    if idx >= 0:
+        return body[:idx] + archive + body[idx:]
     return body + archive

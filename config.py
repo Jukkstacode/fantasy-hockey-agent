@@ -43,6 +43,11 @@ MY_GM = os.getenv("MY_GM", "Bimm")
 # League site (weddingsnipe.ca) Firestore project; its contracts collection is public-read
 CONTRACTS_FIRESTORE_PROJECT = os.getenv("CONTRACTS_FIRESTORE_PROJECT", "wedding-snipe")
 
+# Email style: "link" = short summary + link to the hosted report (default),
+# "full" = the whole report in the email, "none" = never email
+EMAIL_MODE = os.getenv("EMAIL_MODE", "link").lower()
+REPORT_URL = os.getenv("REPORT_URL", "https://hockey.bimm.dev/")
+
 # Scouts (see SCOUTING_PLAN.md)
 SCOUT_RECENT_GAMES = int(os.getenv("SCOUT_RECENT_GAMES", "3"))       # "now" window
 SCOUT_BASELINE_GAMES = int(os.getenv("SCOUT_BASELINE_GAMES", "10"))  # comparison window

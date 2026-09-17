@@ -36,6 +36,28 @@ class EmailSender:
         """Check if email credentials are present."""
         return bool(self.gmail_user and self.gmail_password and self.email_to)
 
+    def send_raw(self, subject: str, html_body: str, plain_text: str) -> bool:
+        """Send an already-rendered HTML email (used for the short link email)."""
+        if not self.is_configured():
+            return False
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = f"Fantasy Hockey Agent <{self.gmail_user}>"
+        msg["To"] = self.email_to
+        msg.set_content(plain_text)
+        msg.add_alternative(f"<!DOCTYPE html><html><body style=\"margin:0;background:{C['bg']};\">{html_body}</body></html>",
+                            subtype="html")
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, context=context) as server:
+                server.login(self.gmail_user, self.gmail_password)
+                server.send_message(msg)
+            logger.info("Link email sent to %s", self.email_to)
+            return True
+        except Exception as e:
+            logger.error("Failed to send email: %s", e)
+            return False
+
     def send_briefing(self, subject: str, lineup_html: str, waiver_html: str,
                       plain_text: str, scouting_html: str = ""):
         """Send the daily briefing email.
@@ -78,62 +100,110 @@ class EmailSender:
 
     @staticmethod
     def wrap_html(lineup_html: str, waiver_html: str) -> str:
-        """Wrap the briefing sections in a clean HTML template (also used for the site page)."""
+        """Wrap the briefing sections in the dark template (email and site page).
+
+        Colors follow weddingsnipe.ca (gold accent, condensed display font)
+        on a near-black base. Structural elements get inline styles so Gmail
+        and other clients that ignore <style> still render the design.
+        """
         date_str = datetime.now().strftime("%A, %B %d %Y")
+        body = _inline_styles(lineup_html + waiver_html)
         return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Fantasy Hockey Briefing</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  :root {{ --ink:#16181d; --muted:#6b7280; --line:#e6e8ec; --red:#c8102e; --green:#1f7a3a; --amber:#b7791f; --bg:#f4f5f7; --card:#fff; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px;
-         margin: 0 auto; padding: 20px 16px 40px; color: var(--ink); background: var(--bg); line-height: 1.45; }}
-  .header {{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom: 3px solid var(--red);
-             padding-bottom: 10px; margin-bottom: 18px; flex-wrap: wrap; }}
-  .header h1 {{ margin: 0; font-size: 22px; }}
-  .header .date {{ color: var(--muted); font-size: 14px; }}
-  .section {{ background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }}
-  .section h2 {{ margin: 0 0 10px; font-size: 17px; }}
-  .section h3 {{ margin: 18px 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }}
-  .section h3:first-of-type {{ margin-top: 4px; }}
-  .notes {{ background: #fff8e6; border: 1px solid #f1dfae; border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #6b5210; margin-bottom: 12px; }}
-  .notes div + div {{ margin-top: 4px; }}
-  .player {{ padding: 8px 0; border-bottom: 1px solid var(--line); }}
-  .player:last-child {{ border-bottom: none; }}
-  .start {{ color: var(--green); }}
-  .bench {{ color: var(--muted); }}
-  .move {{ background: #fafafa; border-left: 3px solid var(--red); padding: 10px 12px; margin: 10px 0; border-radius: 6px; }}
-  .move .add {{ color: var(--green); font-weight: 600; }}
-  .move .drop {{ color: #999; text-decoration: line-through; }}
-  .move .reason {{ color: var(--muted); font-size: 13px; margin-top: 4px; }}
-  .opp {{ padding: 10px 12px; margin: 8px 0; border-radius: 8px; background: #fafafa; border: 1px solid var(--line); border-left-width: 4px; }}
-  .opp.now {{ border-left-color: var(--red); background: #fff6f6; }}
-  .opp.rising {{ border-left-color: var(--green); }}
-  .opp.watch {{ border-left-color: var(--amber); }}
-  .opp.alert {{ border-left-color: #8a8f98; }}
-  .opp .head {{ font-weight: 650; font-size: 15px; }}
-  .opp .meta {{ color: var(--muted); font-size: 13px; margin: 3px 0 4px; }}
-  .opp .why {{ font-size: 13.5px; }}
-  .opp .why .trend {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: #374151; display:block; margin-top: 3px; }}
-  .tag {{ display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #e9ecf1; color: #333; margin-right: 4px; }}
-  .small {{ color: var(--muted); font-size: 12.5px; }}
-  .archive {{ columns: 2; font-size: 13px; padding-left: 18px; }}
-  .footer {{ text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }}
-  a {{ color: var(--red); }}
+  body {{ margin:0; background:{C['bg']}; color:{C['text']}; font-family:{FONT_BODY}; line-height:1.45; }}
+  a {{ color:{C['accent']}; }}
+  .archive {{ columns:2; font-size:13px; padding-left:18px; color:{C['muted']}; }}
+  .archive a {{ color:{C['muted']}; }}
+  @media (max-width: 480px) {{ .archive {{ columns:1; }} .wrap {{ padding:14px 12px 32px !important; }} }}
 </style>
 </head>
-<body>
-  <div class="header">
-    <h1>🏒 Fantasy Hockey Briefing</h1>
-    <div class="date">{date_str}</div>
+<body style="margin:0;background:{C['bg']};">
+<div class="wrap" style="max-width:720px;margin:0 auto;padding:22px 16px 40px;background:{C['bg']};color:{C['text']};font-family:{FONT_BODY};">
+  <div class="header" style="{ST['header']}">
+    <h1 style="{ST['h1']}">🏒 Fantasy Hockey Briefing</h1>
+    <div class="date" style="{ST['date']}">{date_str}</div>
   </div>
-  {lineup_html}
-  {waiver_html}
-  <div class="footer">Generated by your fantasy hockey agent · make your moves before puck drop</div>
+  {body}
+  <div class="footer" style="{ST['footer']}">Generated by your fantasy hockey agent · make your moves before puck drop</div>
+</div>
 </body>
 </html>"""
+
+
+# ── Design tokens and email-safe inlining ────────────────────────
+
+C = {
+    "bg": "#0b0c0f", "surface": "#14161a", "card": "#1a1d23", "border": "#262a31",
+    "text": "#eef1f5", "muted": "#98a2b3", "accent": "#e0b04c", "red": "#ff5a5a",
+    "green": "#4cd77a", "gray": "#7d8796", "mono": "#b7c0cc",
+}
+FONT_BODY = "'Atkinson Hyperlegible', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+FONT_DISPLAY = "'Barlow Condensed', 'Arial Narrow', Impact, sans-serif"
+
+ST = {
+    "header": f"display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;"
+              f"border-bottom:2px solid {C['accent']};padding-bottom:10px;margin-bottom:18px;",
+    "h1": f"margin:0;font-family:{FONT_DISPLAY};font-weight:700;font-size:30px;letter-spacing:.02em;"
+          f"text-transform:uppercase;color:{C['accent']};",
+    "date": f"color:{C['muted']};font-size:14px;",
+    "section": f"background:{C['surface']};border:1px solid {C['border']};border-radius:12px;"
+               f"padding:16px 18px;margin-bottom:16px;",
+    "h2": f"margin:0 0 10px;font-family:{FONT_DISPLAY};font-weight:700;font-size:22px;letter-spacing:.03em;"
+          f"text-transform:uppercase;color:{C['accent']};",
+    "h3": f"margin:16px 0 8px;font-family:{FONT_DISPLAY};font-weight:600;font-size:15px;letter-spacing:.08em;"
+          f"text-transform:uppercase;color:{C['muted']};",
+    "notes": f"background:#221d10;border:1px solid #4a3d1a;border-radius:8px;padding:8px 12px;"
+             f"font-size:13px;color:#e6d3a0;margin-bottom:12px;",
+    "player": f"padding:8px 0;border-bottom:1px solid {C['border']};",
+    "start": f"color:{C['green']};",
+    "bench": f"color:{C['muted']};",
+    "move": f"background:{C['card']};border-left:3px solid {C['accent']};padding:10px 12px;margin:10px 0;border-radius:6px;",
+    "add": f"color:{C['green']};font-weight:700;",
+    "drop": f"color:{C['gray']};text-decoration:line-through;",
+    "reason": f"color:{C['muted']};font-size:13px;margin-top:4px;",
+    "opp": f"padding:10px 12px;margin:8px 0;border-radius:8px;background:{C['card']};"
+           f"border:1px solid {C['border']};border-left:4px solid {C['gray']};",
+    "opp now": f"border-left-color:{C['red']};background:#221416;",
+    "opp rising": f"border-left-color:{C['green']};",
+    "opp watch": f"border-left-color:{C['accent']};",
+    "opp alert": f"border-left-color:{C['gray']};",
+    "head": f"font-weight:700;font-size:16px;color:{C['text']};",
+    "meta": f"color:{C['muted']};font-size:13px;margin:3px 0 4px;",
+    "why": f"font-size:13.5px;color:{C['text']};",
+    "trend": f"font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;"
+             f"color:{C['mono']};display:block;margin-top:3px;",
+    "tag": f"display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;background:#262a31;"
+           f"color:#d5dbe3;margin-right:4px;",
+    "small": f"color:{C['muted']};font-size:12.5px;",
+    "footer": f"text-align:center;color:{C['muted']};font-size:12px;margin-top:28px;",
+}
+
+
+def _inline_styles(markup: str) -> str:
+    """Attach inline styles for known classes so clients without <style> support match."""
+    import re
+
+    def repl(m):
+        classes = m.group(1).split()
+        css = ""
+        for cls in classes:
+            css += ST.get(cls, "")
+        combo = " ".join(classes[:2])
+        css += ST.get(combo, "")
+        return f'class="{m.group(1)}" style="{css}"' if css else m.group(0)
+
+    markup = re.sub(r'class="([^"]+)"(?![^>]*style=)', repl, markup)
+    # section headings: inline style on <h2>/<h3> inside sections
+    markup = re.sub(r"<h2>", f'<h2 style="{ST["h2"]}">', markup)
+    markup = re.sub(r"<h3>", f'<h3 style="{ST["h3"]}">', markup)
+    return markup
 
 
 def format_lineup_html(changes: list[dict], league_id: str, team_id: str) -> str:

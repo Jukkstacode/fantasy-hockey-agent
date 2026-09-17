@@ -371,8 +371,60 @@ def write_site_page(changes, recommendations, scouting, mode: str):
         logger.warning("Could not write site page: %s", e)
 
 
+def summary_lines(changes, recommendations, scouting) -> list[str]:
+    """A few plain lines: what's worth opening the report for."""
+    lines = []
+    if scouting:
+        for e in scouting.get("act_now", [])[:5]:
+            lines.append(f"PICK UP: {e['player_name']} ({e.get('nhl_team', '')})"
+                         + (f" for {e['drop_candidate']}" if e.get("drop_candidate") else ""))
+        for e in scouting.get("rising", [])[:3]:
+            lines.append(f"Rising: {e['player_name']} ({e.get('nhl_team', '')})")
+        for e in scouting.get("roster_alerts", [])[:3]:
+            lines.append(f"Your roster: {e['player_name']} — {e['signals'][0].replace('_', ' ')}")
+    if changes:
+        starts = [c['name'] for c in changes if c['selected_position'] != 'BN']
+        if starts:
+            lines.append(f"Lineup: start {', '.join(starts[:6])}")
+    if recommendations:
+        r = recommendations[0]
+        lines.append(f"Waiver: add {r['add_player']['name']} / drop {r['drop_player']['name']}")
+    return lines
+
+
+def send_link_email(sender, changes, recommendations, scouting, mode: str):
+    """Short notification email pointing at the hosted report."""
+    lines = summary_lines(changes, recommendations, scouting)
+    notes = (scouting or {}).get("notes", [])
+    today = datetime.now().strftime("%a %b %d")
+    n_now = len((scouting or {}).get("act_now", []))
+    subject = (f"🏒 {n_now} pickup{'s' if n_now != 1 else ''} to make — {today}" if n_now
+               else f"🏒 Briefing ready — {today}")
+    items = "".join(f"<li>{l}</li>" for l in lines) or "<li>Nothing urgent today.</li>"
+    note_html = "".join(f"<div>{n}</div>" for n in notes)
+    from email_sender import ST, C, FONT_BODY
+    html_body = f"""<div style="max-width:600px;margin:0 auto;padding:20px;background:{C['bg']};color:{C['text']};font-family:{FONT_BODY};">
+  <h1 style="{ST['h1']}">🏒 Fantasy Hockey Briefing</h1>
+  <p style="{ST['date']}">{datetime.now():%A, %B %d %Y}</p>
+  <ul style="padding-left:18px;line-height:1.6;">{items}</ul>
+  <p><a href="{config.REPORT_URL}" style="display:inline-block;background:{C['accent']};color:#111;font-weight:700;
+     padding:10px 16px;border-radius:8px;text-decoration:none;">Open the full report →</a></p>
+  {f'<div style="{ST["notes"]}">{note_html}</div>' if notes else ''}
+</div>"""
+    plain = "\n".join(lines or ["Nothing urgent today."]) + f"\n\nFull report: {config.REPORT_URL}\n"
+    if notes:
+        plain += "\n" + "\n".join(f"! {n}" for n in notes) + "\n"
+    sender.send_raw(subject, html_body, plain)
+
+
 def send_email_briefing(changes, recommendations, scouting, mode: str):
+    if config.EMAIL_MODE == "none":
+        logger.info("EMAIL_MODE=none; report written to the site only")
+        return
     sender = EmailSender()
+    if sender.is_configured() and config.EMAIL_MODE == "link":
+        send_link_email(sender, changes, recommendations, scouting, mode)
+        return
     if not sender.is_configured():
         logger.warning("Email not configured — printing to console instead")
         if changes is not None:

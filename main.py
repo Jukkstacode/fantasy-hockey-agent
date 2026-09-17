@@ -265,7 +265,8 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
         opps.extend(scout_cls().safe_scan(ctx))
     report = rank(opps, ctx)
     if yahoo_error:
-        report.notes.insert(0, f"Yahoo error: {yahoo_error[:160]}")
+        report.notes = [n for n in report.notes if not n.startswith("Yahoo was unreachable")]
+        report.notes.insert(0, f"Yahoo unavailable: {yahoo_error[:160]}")
     if roster_note:
         report.notes.append(roster_note)
     if stats.season_is_stale:
@@ -317,7 +318,26 @@ def print_scouting(report: dict):
     print("\n🔭 " + format_scouting_text(report).replace("\n", "\n   "))
 
 
-# ── Email ────────────────────────────────────────────────────────
+# ── Email / site page ────────────────────────────────────────────
+
+def render_briefing_html(changes, recommendations, scouting) -> str:
+    lineup_html = format_lineup_html(changes or [], config.YAHOO_LEAGUE_ID, config.YAHOO_TEAM_ID) \
+        if changes is not None else ""
+    waiver_html = format_waivers_html(recommendations, config.YAHOO_LEAGUE_ID, config.YAHOO_TEAM_ID) \
+        if recommendations is not None else ""
+    scouting_html = format_scouting_html(scouting, config.YAHOO_LEAGUE_ID, config.YAHOO_TEAM_ID) \
+        if scouting is not None else ""
+    return EmailSender.wrap_html(scouting_html + lineup_html, waiver_html)
+
+
+def write_site_page(changes, recommendations, scouting, mode: str):
+    """Always save the briefing as a static page (served at hockey.bimm.dev)."""
+    try:
+        from site_writer import write_briefing
+        write_briefing(render_briefing_html(changes, recommendations, scouting), mode)
+    except Exception as e:
+        logger.warning("Could not write site page: %s", e)
+
 
 def send_email_briefing(changes, recommendations, scouting, mode: str):
     sender = EmailSender()
@@ -447,6 +467,7 @@ def main():
         if run_scouts:
             scouting = collect_scouting(yahoo, nhl, stats, store, as_of, yahoo_error)
 
+        write_site_page(changes, recommendations, scouting, args.mode)
         if args.email:
             send_email_briefing(changes, recommendations, scouting, args.mode)
         else:

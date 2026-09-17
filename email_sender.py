@@ -61,7 +61,7 @@ class EmailSender:
         msg.set_content(plain_text)
 
         # HTML version (preferred)
-        html_body = self._wrap_html(scouting_html + lineup_html, waiver_html)
+        html_body = self.wrap_html(scouting_html + lineup_html, waiver_html)
         msg.add_alternative(html_body, subtype="html")
 
         try:
@@ -76,94 +76,52 @@ class EmailSender:
             logger.error("Failed to send email: %s", e)
             return False
 
-    def _wrap_html(self, lineup_html: str, waiver_html: str) -> str:
-        """Wrap the briefing sections in a clean HTML template."""
+    @staticmethod
+    def wrap_html(lineup_html: str, waiver_html: str) -> str:
+        """Wrap the briefing sections in a clean HTML template (also used for the site page)."""
         date_str = datetime.now().strftime("%A, %B %d %Y")
         return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fantasy Hockey Briefing</title>
 <style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 600px;
-    margin: 0 auto;
-    padding: 20px;
-    color: #1a1a1a;
-    background: #fafafa;
-  }}
-  .header {{
-    border-bottom: 3px solid #c8102e;
-    padding-bottom: 12px;
-    margin-bottom: 24px;
-  }}
-  .header h1 {{
-    margin: 0;
-    color: #1a1a1a;
-    font-size: 24px;
-  }}
-  .header .date {{
-    color: #666;
-    font-size: 14px;
-    margin-top: 4px;
-  }}
-  .section {{
-    background: white;
-    border-radius: 8px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  }}
-  .section h2 {{
-    margin-top: 0;
-    font-size: 18px;
-    color: #c8102e;
-  }}
-  .player {{
-    padding: 8px 0;
-    border-bottom: 1px solid #f0f0f0;
-  }}
-  .player:last-child {{
-    border-bottom: none;
-  }}
-  .start {{ color: #2d7a2d; }}
-  .bench {{ color: #888; }}
-  .move {{
-    background: #f7f7f7;
-    border-left: 3px solid #c8102e;
-    padding: 12px;
-    margin: 12px 0;
-    border-radius: 4px;
-  }}
-  .move .add {{ color: #2d7a2d; font-weight: 600; }}
+  :root {{ --ink:#16181d; --muted:#6b7280; --line:#e6e8ec; --red:#c8102e; --green:#1f7a3a; --amber:#b7791f; --bg:#f4f5f7; --card:#fff; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px;
+         margin: 0 auto; padding: 20px 16px 40px; color: var(--ink); background: var(--bg); line-height: 1.45; }}
+  .header {{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; border-bottom: 3px solid var(--red);
+             padding-bottom: 10px; margin-bottom: 18px; flex-wrap: wrap; }}
+  .header h1 {{ margin: 0; font-size: 22px; }}
+  .header .date {{ color: var(--muted); font-size: 14px; }}
+  .section {{ background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }}
+  .section h2 {{ margin: 0 0 10px; font-size: 17px; }}
+  .section h3 {{ margin: 18px 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }}
+  .section h3:first-of-type {{ margin-top: 4px; }}
+  .notes {{ background: #fff8e6; border: 1px solid #f1dfae; border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #6b5210; margin-bottom: 12px; }}
+  .notes div + div {{ margin-top: 4px; }}
+  .player {{ padding: 8px 0; border-bottom: 1px solid var(--line); }}
+  .player:last-child {{ border-bottom: none; }}
+  .start {{ color: var(--green); }}
+  .bench {{ color: var(--muted); }}
+  .move {{ background: #fafafa; border-left: 3px solid var(--red); padding: 10px 12px; margin: 10px 0; border-radius: 6px; }}
+  .move .add {{ color: var(--green); font-weight: 600; }}
   .move .drop {{ color: #999; text-decoration: line-through; }}
-  .move .reason {{ color: #666; font-size: 13px; margin-top: 4px; }}
-  .footer {{
-    text-align: center;
-    color: #999;
-    font-size: 12px;
-    margin-top: 32px;
-  }}
-  a {{ color: #c8102e; }}
-  .opp {{
-    padding: 10px 12px;
-    margin: 10px 0;
-    border-radius: 4px;
-    background: #f7f7f7;
-    border-left: 3px solid #999;
-  }}
-  .opp.now {{ border-left-color: #c8102e; background: #fff5f5; }}
-  .opp.rising {{ border-left-color: #2d7a2d; }}
-  .opp.watch {{ border-left-color: #e0a800; }}
-  .opp.alert {{ border-left-color: #666; }}
-  .opp .head {{ font-weight: 600; }}
-  .opp .meta {{ color: #666; font-size: 13px; margin-top: 2px; }}
-  .opp .why {{ font-size: 13px; margin-top: 4px; }}
-  .tag {{
-    display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px;
-    background: #e8e8e8; color: #333; margin-right: 4px;
-  }}
-  .small {{ color: #888; font-size: 12px; }}
+  .move .reason {{ color: var(--muted); font-size: 13px; margin-top: 4px; }}
+  .opp {{ padding: 10px 12px; margin: 8px 0; border-radius: 8px; background: #fafafa; border: 1px solid var(--line); border-left-width: 4px; }}
+  .opp.now {{ border-left-color: var(--red); background: #fff6f6; }}
+  .opp.rising {{ border-left-color: var(--green); }}
+  .opp.watch {{ border-left-color: var(--amber); }}
+  .opp.alert {{ border-left-color: #8a8f98; }}
+  .opp .head {{ font-weight: 650; font-size: 15px; }}
+  .opp .meta {{ color: var(--muted); font-size: 13px; margin: 3px 0 4px; }}
+  .opp .why {{ font-size: 13.5px; }}
+  .opp .why .trend {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: #374151; display:block; margin-top: 3px; }}
+  .tag {{ display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #e9ecf1; color: #333; margin-right: 4px; }}
+  .small {{ color: var(--muted); font-size: 12.5px; }}
+  .archive {{ columns: 2; font-size: 13px; padding-left: 18px; }}
+  .footer {{ text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }}
+  a {{ color: var(--red); }}
 </style>
 </head>
 <body>
@@ -173,9 +131,7 @@ class EmailSender:
   </div>
   {lineup_html}
   {waiver_html}
-  <div class="footer">
-    Generated by your fantasy hockey agent · Make your moves before puck drop
-  </div>
+  <div class="footer">Generated by your fantasy hockey agent · make your moves before puck drop</div>
 </body>
 </html>"""
 
@@ -321,7 +277,10 @@ def _opp_html(entry: dict, css: str, league_id: str, team_id: str) -> str:
         meta.append(entry["note"])
     if entry.get("rostered_by") and not entry.get("note"):
         meta.append(f"rostered by {entry['rostered_by']}")
-    why = "<br>".join(entry.get("evidence_lines", []))
+    why = "<br>".join(
+        f'<span class="trend">{line}</span>' if line.startswith("Trend") else line
+        for line in entry.get("evidence_lines", [])
+    )
     if entry.get("source_url"):
         why += f' <a href="{entry["source_url"]}">source</a>'
     return (f'<div class="opp {css}"><div class="head">{head}</div>'
@@ -333,13 +292,14 @@ def format_scouting_html(report: dict, league_id: str, team_id: str) -> str:
     """Render the ranked scouting report as HTML sections."""
     parts = []
     url = f"https://hockey.fantasysports.yahoo.com/hockey/{league_id}/{team_id}/players"
-    for note in report.get("notes", []):
-        parts.append(f'<p class="small">⚠️ {note}</p>')
+    notes = report.get("notes", [])
+    if notes:
+        parts.append('<div class="notes">' + "".join(f"<div>{n}</div>" for n in notes) + "</div>")
     sections = [
-        ("act_now", "🚨 Act Now", "now"),
-        ("rising", "📈 Rising", "rising"),
+        ("act_now", "🚨 Act now: pick up", "now"),
+        ("rising", "📈 Rising free agents", "rising"),
+        ("roster_alerts", "🌡️ Your roster", "alert"),
         ("watchlist", "👀 Watchlist", "watch"),
-        ("roster_alerts", "🌡️ Your Roster", "alert"),
     ]
     any_content = False
     for key, title, css in sections:
@@ -367,8 +327,8 @@ def format_scouting_text(report: dict) -> str:
     lines = ["SCOUTING REPORT", "-" * 40]
     for note in report.get("notes", []):
         lines.append(f"  ! {note}")
-    for key, title in (("act_now", "ACT NOW"), ("rising", "RISING"),
-                       ("watchlist", "WATCHLIST"), ("roster_alerts", "YOUR ROSTER")):
+    for key, title in (("act_now", "ACT NOW: PICK UP"), ("rising", "RISING FREE AGENTS"),
+                       ("roster_alerts", "YOUR ROSTER"), ("watchlist", "WATCHLIST")):
         entries = report.get(key, [])
         if not entries:
             continue

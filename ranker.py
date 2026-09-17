@@ -135,12 +135,12 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
             score = max(score, 5.0 * o.confidence * URGENCY_MULT.get(o.urgency, 1.0))
         entry["score"] = round(score, 2)
 
-        # Availability routing
+        # Only players you could actually add. Other managers' players are
+        # not pickups, so they don't make the report at all.
         if o.available is False:
-            # Rostered by another manager: trade target
-            entry["note"] = f"Rostered by {o.rostered_by}" if o.rostered_by else "Rostered"
-            report.watchlist.append(entry)
             continue
+        if o.available is None:
+            entry["note"] = "availability unknown"
 
         # Repeat suppression: same player, same signals, shown within the last
         # few days and not urgent -> one-line "still available" mention instead
@@ -157,6 +157,9 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
 
     for section in (report.act_now, report.rising, report.watchlist, report.roster_alerts, report.still_available):
         section.sort(key=lambda e: -e.get("score", 0))
+    # Regression-only watch items are the least actionable; keep just a few
+    report.watchlist = ([e for e in report.watchlist if e["signals"] != ["regression_buy"]]
+                        + [e for e in report.watchlist if e["signals"] == ["regression_buy"]])
     report.act_now = report.act_now[:config.SCOUT_MAX_ACT_NOW]
     report.rising = report.rising[:config.SCOUT_MAX_RISING]
     report.watchlist = report.watchlist[:config.SCOUT_MAX_WATCHLIST]

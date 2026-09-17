@@ -56,7 +56,7 @@ SCOUT_GOALIE_START_SHARE = float(os.getenv("SCOUT_GOALIE_START_SHARE", "0.6"))
 SCOUT_REPEAT_DAYS = int(os.getenv("SCOUT_REPEAT_DAYS", "3"))         # don't re-alert within N days
 SCOUT_MAX_ACT_NOW = int(os.getenv("SCOUT_MAX_ACT_NOW", "5"))
 SCOUT_MAX_RISING = int(os.getenv("SCOUT_MAX_RISING", "8"))
-SCOUT_MAX_WATCHLIST = int(os.getenv("SCOUT_MAX_WATCHLIST", "8"))
+SCOUT_MAX_WATCHLIST = int(os.getenv("SCOUT_MAX_WATCHLIST", "5"))
 SCOUT_AVAILABLE_POOL = int(os.getenv("SCOUT_AVAILABLE_POOL", "300")) # Yahoo available players to scan
 
 # League scoring. VALUATION=points ranks players by projected fantasy points

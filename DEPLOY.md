@@ -171,6 +171,39 @@ fallback still works:
 
 Set `MY_GM` in `.env` to your GM name so your contracts count as your roster.
 
+## Hosting the latest report (hockey.bimm.dev)
+
+Every run writes the briefing to `state/site/index.html` (dated copies kept
+three weeks). An nginx container serves that folder on localhost:8090 with
+HTTP basic auth (`state/site-nginx/htpasswd`; the password is in
+`state/site-nginx/password.txt`):
+
+```bash
+docker run -d --restart unless-stopped --name hockey-site -p 127.0.0.1:8090:80 \
+  -v ~/fantasy-hockey-agent/state/site:/usr/share/nginx/html:ro \
+  -v ~/fantasy-hockey-agent/state/site-nginx/default.conf:/etc/nginx/conf.d/default.conf:ro \
+  -v ~/fantasy-hockey-agent/state/site-nginx/htpasswd:/etc/nginx/htpasswd:ro nginx:alpine
+```
+
+Expose it through the existing Cloudflare tunnel by adding an ingress rule
+to `/etc/cloudflared/config.yml` **above** the final `http_status:404` line:
+
+```yaml
+  - hostname: hockey.bimm.dev
+    service: http://localhost:8090
+```
+
+then create the DNS record and restart the tunnel:
+
+```bash
+cloudflared tunnel route dns homeserver hockey.bimm.dev
+sudo systemctl restart cloudflared
+```
+
+For Google-login protection instead of the basic-auth password, add a
+Cloudflare Access application for hockey.bimm.dev in the Zero Trust
+dashboard and remove the `auth_basic` lines from `default.conf`.
+
 ## Re-authorizing Yahoo from the server (no browser)
 
 If the API starts returning "This application is not authorized to perform this

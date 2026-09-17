@@ -109,6 +109,7 @@ fantasy-hockey-agent/
 ├── scoring.py           # League fantasy-point formulas (skater and goalie)
 ├── nhl_stats.py         # Official NHL stats by player ID: season summaries + game logs (cached)
 ├── trend.py             # Per-game fantasy points, sparklines, hot/cold detection
+├── site_writer.py       # Saves each briefing as a static page (state/site/) for hosting
 ├── decision_log.py      # Logs all decisions for review
 ├── requirements.txt
 ├── .env.example

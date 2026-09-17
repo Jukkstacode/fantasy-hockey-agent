@@ -66,6 +66,7 @@ class ScoutContext:
         self.store = store
         self.as_of = as_of or date.today()
         self.yahoo_ok = yahoo_ok
+        self.default_available: Optional[bool] = None   # pre-draft: unrostered players are draftable
         self.players: dict[str, PlayerInfo] = {}       # name key -> info
         self.my_roster: list[PlayerInfo] = []
         self.extras: dict = {}                          # scout-to-scout shared data
@@ -138,6 +139,8 @@ class ScoutContext:
             opp.on_my_roster = info.on_my_roster
             if info.ownership_type == "team" and not info.on_my_roster:
                 opp.rostered_by = info.owner_team
+        elif self.default_available is not None:
+            opp.available = self.default_available
         elif self.yahoo_ok:
             # Yahoo reachable but player not in the scanned pool: probably a
             # deep free agent outside the top-N scan, or a name mismatch.

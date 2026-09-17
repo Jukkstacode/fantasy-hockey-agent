@@ -154,9 +154,15 @@ refresh) so the failure only shows up on API calls. Apply at
 https://sports.yahoo.com/developer/access/ and wait for approval; nothing in
 this repo can work around it.
 
-While waiting, put your roster in `state/my_roster.txt` (one name per line,
-add `, G` after goalies) and the scouts will still compare opportunities
-against it. Free-agent availability stays unknown until access is restored.
+While waiting, the agent reads rosters and the free-agent list from Yahoo's
+web pages using your browser session. Export your `yahoo.com` cookies with a
+cookies.txt/JSON exporter extension (JSON format) and save them as
+`state/yahoo_cookies.json` (`chmod 600`). About 26 GET requests per run, no
+browser. When the cookies expire, Yahoo redirects to its login page, the
+briefing says so, and you re-export.
+
+Last resort: put your roster in `state/my_roster.txt` (one name per line, add
+`, G` after goalies); free-agent availability is then unknown.
 
 ## Keeper contracts
 

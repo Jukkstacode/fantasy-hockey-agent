@@ -144,8 +144,9 @@ def run_trends(as_of: date):
         from yahoo_client import YahooClient
         roster = [p for p in YahooClient().get_player_universe() if p.on_my_roster]
     except Exception as e:
-        logger.warning("Yahoo unavailable (%s); using roster file", str(e)[:60])
-        roster = load_roster_file()
+        logger.warning("Yahoo API unavailable (%s); trying web session / roster file", str(e)[:60])
+        players, _ = load_from_yahoo_web()
+        roster = [p for p in players if p.on_my_roster] or load_roster_file()
     roster = merge_contracts(roster)
     roster = [p for p in roster if p.on_my_roster]
     pool = [p.name for p in roster] + stats.top_skaters(150) + stats.top_goalies(30)
@@ -220,6 +221,28 @@ def merge_contracts(players: list) -> list:
     return players + added
 
 
+def load_from_yahoo_web() -> tuple[list, str]:
+    """Rosters and free agents from Yahoo's web pages via saved cookies."""
+    from yahoo_web import YahooWeb, YahooLoginRequired
+    if not YahooWeb.available():
+        return [], None
+    try:
+        web = YahooWeb()
+        if web.is_predraft():
+            return [], (f"Yahoo league is pre-draft (team: {web.my_team_name()}): keeper contracts "
+                        f"count as rosters and everyone else is draftable.")
+        players = web.player_universe()
+        note = f"Rosters and free agents read from Yahoo (team: {web.my_team_name()})."
+        return players, note
+    except YahooLoginRequired as e:
+        logger.error("%s", e)
+        return [], ("Yahoo session cookies have expired: export them again from your browser to "
+                    "state/yahoo_cookies.json. Free-agent availability is unknown until then.")
+    except Exception as e:
+        logger.warning("Yahoo web read failed: %s", e)
+        return [], f"Yahoo web read failed ({str(e)[:80]})."
+
+
 def load_roster_file() -> list:
     """Roster from state/my_roster.txt (one name per line, optional ', G' for goalies)."""
     from scouts.base import PlayerInfo
@@ -252,6 +275,13 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
             logger.warning("Could not fetch player universe from Yahoo: %s", e)
             yahoo_error = yahoo_error or str(e)
     roster_note = None
+    web_ok = predraft = False
+    if not players:
+        players, web_note = load_from_yahoo_web()
+        web_ok = bool(players)
+        predraft = bool(web_note and "pre-draft" in web_note)
+        if web_note:
+            roster_note = web_note
     if not players:
         players = load_roster_file()
         if players:
@@ -259,7 +289,9 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
                            f"free-agent availability is unknown until Yahoo access is restored.")
     players = merge_contracts(players)
     ctx = ScoutContext(stats, nhl, store, as_of=as_of, players=players,
-                       yahoo_ok=bool(players) and yahoo is not None and not yahoo_error)
+                       yahoo_ok=web_ok or (bool(players) and yahoo is not None and not yahoo_error))
+    if predraft:
+        ctx.default_available = True
     opps = []
     for scout_cls in ALL_SCOUTS:
         opps.extend(scout_cls().safe_scan(ctx))
@@ -272,7 +304,7 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
     if stats.season_is_stale:
         report.notes.append(f"No {stats.requested_season}-{stats.requested_season + 1} game data yet; "
                             f"values are from {stats.season}-{stats.season + 1}.")
-    if players and not roster_note:
+    if players and (web_ok or not roster_note):
         store.save("players", ctx.snapshot())
     result = report.to_dict()
     decision_log.log_scouting(result)

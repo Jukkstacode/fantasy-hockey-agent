@@ -88,6 +88,7 @@ fantasy-hockey-agent/
 ├── main.py              # Entry point and CLI
 ├── config.py            # Configuration and environment loading
 ├── yahoo_client.py      # Yahoo Fantasy API wrapper
+├── yahoo_web.py         # Rosters + free agents from Yahoo web pages via saved cookies (API fallback)
 ├── nhl_client.py        # NHL API client (schedule, injuries, stats)
 ├── lineup_optimizer.py  # Daily lineup optimization logic
 ├── waiver_manager.py    # Waiver wire / free agent evaluation

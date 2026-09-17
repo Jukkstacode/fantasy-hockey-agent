@@ -16,7 +16,7 @@ from collections import defaultdict
 import polars as pl
 
 import config
-from stats_provider import StatsProvider, _normalize_name
+from stats_provider import StatsProvider, _normalize_name, name_keys
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,27 @@ def _pp_shares(stats: StatsProvider) -> dict[str, float]:
     return shares
 
 
-def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
-    """Assumes stats.configure_scoring() has been called."""
+def build_board(stats: StatsProvider, top_n: int = 200, contracts: list[dict] = None,
+                include_contracted: bool = False) -> dict:
+    """Assumes stats.configure_scoring() has been called.
+
+    Contracted players are dropped from the board unless include_contracted,
+    in which case they're kept with the owning GM shown in the flags.
+    """
     stats.load()
     pp_share = _pp_shares(stats)
+    contracted = {}
+    for c in contracts or []:
+        for key in name_keys(c["name"]):
+            contracted.setdefault(key, c)
+    my_gm = config.MY_GM.lower()
+
+    def contract_flag(name: str):
+        c = next((contracted[k] for k in name_keys(name) if k in contracted), None)
+        if not c:
+            return None
+        return f"[{c['gm']} {c.get('years', '?')}y]" if c.get("gm", "").lower() != my_gm else "[MINE]"
+
     reg = {r["name"]: r for r in stats.regression_table()}
 
     skaters, seen = [], set()
@@ -61,6 +78,11 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
         if value <= 0:
             continue
         flags = []
+        cf = contract_flag(name)
+        if cf and not include_contracted:
+            continue
+        if cf:
+            flags.append(cf)
         share = pp_share.get(_normalize_name(name), 0.0)
         if share >= 0.5:
             flags.append("PP1")
@@ -71,10 +93,15 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
             flags.append("COLD")
         elif r and r["diff"] <= -max(6.0, 0.35 * r["ixg"]):
             flags.append("HOT")
+        official = stats.nhl.official_row(name) if getattr(stats, "nhl", None) else None
+        if official:
+            gp = official.get("gamesPlayed") or gp
         skaters.append({
-            "name": name, "team": row.get("team", ""), "pos": row.get("position", ""),
+            "name": name, "team": (official or {}).get("teamAbbrevs") or row.get("team", ""),
+            "pos": row.get("position", ""),
             "gp": gp, "value": round(value, 1), "pp_share": round(share, 2),
-            "points": row.get("points", 0), "goals": row.get("goals", 0),
+            "points": (official or {}).get("points", row.get("points", 0)),
+            "goals": (official or {}).get("goals", row.get("goals", 0)),
             "ixg": round(row.get("individualxGoals") or 0.0, 1), "flags": flags,
         })
     skaters.sort(key=lambda r: -r["value"])
@@ -98,6 +125,9 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
         if gp < MIN_GP_GOALIE:
             continue
         value = stats.get_goalie_value(name)
+        cf = contract_flag(name)
+        if cf and not include_contracted:
+            continue
         gsax = (row.get("xGoals") or 0.0) - (row.get("goals") or 0.0)
         share = gp / max(team_games.get(row.get("team"), 82), 1)
         goalies.append({
@@ -105,7 +135,7 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
             "value": round(value, 1), "gsax": round(gsax, 1), "start_share": round(share, 2),
             # what a roster slot actually yields: per-start points x how often he starts
             "per_team_game": round(value * share, 1),
-            "flags": ["1A"] if share >= 0.6 else ["1B"],
+            "flags": (["1A"] if share >= 0.6 else ["1B"]) + ([cf] if cf else []),
         })
     goalies.sort(key=lambda r: -(r["per_team_game"] if stats.points_mode else r["value"]))
     for i, r in enumerate(goalies, 1):
@@ -113,7 +143,9 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
 
     return {
         "season": stats.season, "points_mode": stats.points_mode,
-        "scoring": ("points: " + " ".join(f"{v:g}*{k}" for k, v in config.FANTASY_POINTS_WEIGHTS.items()))
+        "contracted_excluded": 0 if include_contracted else len(contracts or []),
+        "scoring": ("points: " + " ".join(f"{v:g}*{k}" for k, v in config.FANTASY_POINTS_WEIGHTS.items())
+                    + f" [{stats._values_source}]")
                    if stats.points_mode else "categories: " + ", ".join(stats._categories),
         "skaters": skaters[:top_n], "goalies": goalies[:max(20, top_n // 8)],
     }
@@ -121,7 +153,10 @@ def build_board(stats: StatsProvider, top_n: int = 200) -> dict:
 
 def format_board_text(board: dict, by_position: bool = False) -> str:
     val = "FPPG" if board.get("points_mode") else "Val"
-    lines = [f"DRAFT BOARD — values from {board['season']}-{board['season'] + 1}, {board['scoring']}", ""]
+    lines = [f"DRAFT BOARD — values from {board['season']}-{board['season'] + 1}, {board['scoring']}"]
+    if board.get("contracted_excluded"):
+        lines.append(f"({board['contracted_excluded']} keeper contracts excluded; --include-contracted to show them)")
+    lines.append("")
     lines.append(f"{'#':>3}  {'Player':24} {'Tm':4} {'Pos':4} {val:>6} {'GP':>3} {'Pts':>4} {'PP%':>4}  Flags")
     lines.append("-" * 72)
     for r in board["skaters"]:

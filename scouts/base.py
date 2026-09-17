@@ -32,6 +32,7 @@ class PlayerInfo:
     ownership_type: str = ""         # "freeagents" | "waivers" | "team"
     owner_team: str = ""
     on_my_roster: bool = False
+    nhl_id: str = ""
 
     @property
     def available(self) -> bool:
@@ -70,7 +71,7 @@ class ScoutContext:
         self.extras: dict = {}                          # scout-to-scout shared data
         try:
             from trend import TrendProvider
-            self.extras["trends"] = TrendProvider(stats)
+            self.extras["trends"] = TrendProvider(stats, pool=self.trend_pool)
         except Exception as e:
             logger.warning("Trend provider unavailable: %s", e)
         for p in players or []:
@@ -112,6 +113,19 @@ class ScoutContext:
             seen.add(id(p))
             out[_normalize_name(p.name)] = p.to_dict()
         return out
+
+    def trend_pool(self) -> list[str]:
+        """Players worth fetching game logs for: everyone we know about plus the
+        top of the league by value (covers hot free agents outside the Yahoo scan)."""
+        names, seen = [], set()
+        for p in list(self.players.values()):
+            if id(p) in seen:
+                continue
+            seen.add(id(p))
+            names.append(p.name)
+        names += self.stats.top_skaters(150)
+        names += self.stats.top_goalies(30)
+        return list(dict.fromkeys(names))
 
     def decorate(self, opp: Opportunity) -> Opportunity:
         """Fill Yahoo availability/position fields onto an opportunity."""

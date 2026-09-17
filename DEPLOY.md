@@ -158,6 +158,19 @@ While waiting, put your roster in `state/my_roster.txt` (one name per line,
 add `, G` after goalies) and the scouts will still compare opportunities
 against it. Free-agent availability stays unknown until access is restored.
 
+## Keeper contracts
+
+Contracts are read live from the league site's Firestore `contracts`
+collection (public read per its rules) and cached in `state/contracts.json`.
+Nothing to maintain. If the site ever locks the collection down, the manual
+fallback still works:
+
+```bash
+./dev.sh python main.py --import-contracts /path/to/contracts.html
+```
+
+Set `MY_GM` in `.env` to your GM name so your contracts count as your roster.
+
 ## Re-authorizing Yahoo from the server (no browser)
 
 If the API starts returning "This application is not authorized to perform this

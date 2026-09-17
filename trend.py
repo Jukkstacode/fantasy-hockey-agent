@@ -80,8 +80,11 @@ class Trend:
     def spark(self) -> str:
         return sparkline(self.per_game[-config.TREND_BASE_GAMES:])
 
-    def label(self) -> str:
+    def label(self, stale: bool = False) -> str:
         unit = "FP/start" if self.is_goalie else "FPPG"
+        if stale:
+            return f"end of last season: {self.season_avg:.1f} {unit} over {self.games} games, " \
+                   f"last 5 {self.recent_avg:.1f} {self.spark()}"
         n = config.TREND_HOT_GAMES
         s = f"{self.arrow} {self.spark()} last {n}: {self.recent_avg:.1f} {unit} vs {self.base_avg:.1f} prior"
         if self.season_avg:
@@ -105,11 +108,19 @@ def _slope(values: list[float]) -> float:
 
 
 class TrendProvider:
-    """Builds trends once per run from the stats provider's game logs."""
+    """Builds trends once per run.
 
-    def __init__(self, stats: StatsProvider, days: int = 75):
+    With a pool of player names and a reachable NHL API, trends come from the
+    official per-player game logs (exact fantasy points, including GWG and
+    goalie decisions). Otherwise they come from MoneyPuck game logs.
+    """
+
+    def __init__(self, stats: StatsProvider, days: int = 75, pool=None):
         self.stats = stats
         self.days = days
+        self.pool = pool                     # list[str] or callable -> list[str]
+        self.source = "moneypuck"
+        self.stale = False                   # True when logs are from the previous season
         self._skaters: dict[str, Trend] = {}
         self._goalies: dict[str, Trend] = {}
         self._built = False
@@ -119,11 +130,55 @@ class TrendProvider:
             return
         self._built = True
         try:
-            self._build_skaters()
-            self._build_goalies()
+            if not self._build_from_nhl():
+                self.stale = bool(getattr(self.stats, "season_is_stale", False))
+                self._build_skaters()
+                self._build_goalies()
         except Exception as e:
             logger.warning("Trend build failed: %s", e)
-        logger.info("Trends built for %d skaters, %d goalies", len(self._skaters), len(self._goalies))
+        logger.info("Trends built for %d skaters, %d goalies (%s)", len(self._skaters), len(self._goalies), self.source)
+
+    def _build_from_nhl(self) -> bool:
+        nhl = getattr(self.stats, "nhl", None)
+        if nhl is None or self.pool is None:
+            return False
+        names = self.pool() if callable(self.pool) else self.pool
+        ids = {}
+        for name in names:
+            pid = nhl.resolve_id(name)
+            if pid:
+                ids[pid] = name
+        if not ids:
+            return False
+        logs = nhl.fetch_game_logs(list(ids))
+        hot_n, base_n = config.TREND_HOT_GAMES, config.TREND_BASE_GAMES
+        for pid, games in logs.items():
+            if not games:
+                continue
+            goalie = nhl.is_goalie(pid)
+            if goalie:
+                games = [g for g in games if g.get("gamesStarted")]
+                vals = [scoring.goalie_points_from_nhl_game(g) for g in games]
+            else:
+                vals = [scoring.skater_points_from_nhl_game(g) for g in games]
+            if len(vals) < hot_n + 2:
+                continue
+            recent = vals[-hot_n:]
+            base = vals[-(hot_n + base_n):-hot_n] or vals[:-hot_n]
+            shots = [float(g.get("shots") or 0) for g in games] if not goalie else []
+            t = Trend(
+                name=nhl.name_of(pid), team=games[-1].get("teamAbbrev", ""),
+                position="G" if goalie else nhl.position_of(pid), games=len(vals),
+                per_game=vals[-(hot_n + base_n):], recent_avg=sum(recent) / len(recent),
+                base_avg=sum(base) / len(base) if base else 0.0, season_avg=sum(vals) / len(vals),
+                slope=_slope(vals[-(hot_n + base_n):]), is_goalie=goalie,
+                shots_recent=(sum(shots[-hot_n:]) / hot_n) if shots else 0.0,
+                shots_base=(sum(shots[-(hot_n + base_n):-hot_n]) / max(1, len(shots[-(hot_n + base_n):-hot_n]))) if shots else 0.0,
+            )
+            (self._goalies if goalie else self._skaters)[_normalize_name(t.name)] = t
+        self.stale = bool(getattr(nhl, "season_is_stale", False))
+        self.source = f"NHL API ({len(ids)} players{', last season' if self.stale else ''})"
+        return True
 
     def _build_skaters(self):
         allg = self.stats.get_skater_games("all", days=self.days)

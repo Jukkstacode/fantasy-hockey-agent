@@ -55,3 +55,35 @@ def skater_points_from_game_rows(all_row: dict, ev_row: dict, pp_row: dict, pk_r
         return ((r or {}).get("goals") or 0) + ((r or {}).get("primaryAssists") or 0) + ((r or {}).get("secondaryAssists") or 0)
 
     return skater_points(g, a, plus_minus, pim, pts(pp_row), pts(pk_row))
+
+
+# ── NHL API rows (exact league stats) ────────────────────────────
+
+def skater_points_from_nhl_season(row: dict) -> float:
+    """Season totals from api.nhle.com skater/summary."""
+    g = row.get("goals") or 0
+    a = row.get("assists") or 0
+    return skater_points(g, a, row.get("plusMinus") or 0, row.get("penaltyMinutes") or 0,
+                         row.get("ppPoints") or 0, row.get("shPoints") or 0, row.get("gameWinningGoals") or 0)
+
+
+def skater_points_from_nhl_game(row: dict) -> float:
+    """One game from api-web.nhle.com player game-log."""
+    return skater_points(row.get("goals") or 0, row.get("assists") or 0, row.get("plusMinus") or 0,
+                         row.get("pim") or 0, row.get("powerPlayPoints") or 0,
+                         row.get("shorthandedPoints") or 0, row.get("gameWinningGoals") or 0)
+
+
+def goalie_points_from_nhl_season(row: dict) -> float:
+    """Season totals from api.nhle.com goalie/summary."""
+    ga = row.get("goalsAgainst") or 0
+    sa = row.get("shotsAgainst") or 0
+    return goalie_points(row.get("wins") or 0, ga, sa, row.get("shutouts") or 0)
+
+
+def goalie_points_from_nhl_game(row: dict) -> float:
+    """One game from the goalie game-log (decision W/L/O; no points for L/OTL)."""
+    win = 1 if row.get("decision") == "W" else 0
+    ga = row.get("goalsAgainst") or 0
+    sa = row.get("shotsAgainst") or 0
+    return goalie_points(win, ga, sa, row.get("shutouts") or 0)

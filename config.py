@@ -38,6 +38,10 @@ MATCHUP_GAA_THRESHOLD = float(os.getenv("MATCHUP_GAA_THRESHOLD", "3.0"))
 
 # Fallback roster while the Yahoo API is unavailable: one player name per line
 ROSTER_FILE = BASE_DIR / "state" / "my_roster.txt"
+# Your GM name on the league site (keeper contracts under this name are your roster)
+MY_GM = os.getenv("MY_GM", "Bimm")
+# League site (weddingsnipe.ca) Firestore project; its contracts collection is public-read
+CONTRACTS_FIRESTORE_PROJECT = os.getenv("CONTRACTS_FIRESTORE_PROJECT", "wedding-snipe")
 
 # Scouts (see SCOUTING_PLAN.md)
 SCOUT_RECENT_GAMES = int(os.getenv("SCOUT_RECENT_GAMES", "3"))       # "now" window

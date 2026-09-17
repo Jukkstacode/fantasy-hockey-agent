@@ -110,9 +110,10 @@ def run_auth(code: str = None, url_only: bool = False):
         sys.exit(1)
 
 
-def run_draft(top_n: int, md_path: str = None):
+def run_draft(top_n: int, md_path: str = None, include_contracted: bool = False):
     """Print (and optionally save) the draft board."""
     from draft_board import build_board, format_board_text, format_board_markdown
+    from contracts import refresh_contracts
 
     stats = StatsProvider()
     league = None
@@ -122,7 +123,8 @@ def run_draft(top_n: int, md_path: str = None):
     except Exception as e:
         logger.warning("Using configured scoring (Yahoo unavailable: %s)", str(e)[:80])
     stats.configure_scoring(league)
-    board = build_board(stats, top_n=top_n)
+    contracts = refresh_contracts()
+    board = build_board(stats, top_n=top_n, contracts=contracts, include_contracted=include_contracted)
     print(format_board_text(board, by_position=True))
     if md_path:
         with open(md_path, "w", encoding="utf-8") as f:
@@ -137,7 +139,6 @@ def run_trends(as_of: date):
 
     stats = StatsProvider(as_of=as_of)
     stats.configure_scoring(None)
-    trends = TrendProvider(stats)
     roster: list[PlayerInfo] = []
     try:
         from yahoo_client import YahooClient
@@ -145,18 +146,25 @@ def run_trends(as_of: date):
     except Exception as e:
         logger.warning("Yahoo unavailable (%s); using roster file", str(e)[:60])
         roster = load_roster_file()
+    roster = merge_contracts(roster)
+    roster = [p for p in roster if p.on_my_roster]
+    pool = [p.name for p in roster] + stats.top_skaters(150) + stats.top_goalies(30)
+    trends = TrendProvider(stats, pool=pool)
+    trends.build()
     w = " ".join(f"{v:g}*{k}" for k, v in config.FANTASY_POINTS_WEIGHTS.items())
     print(f"\n📈 TREND LINES as of {as_of}  (skater FP = {w}; "
-          f"last {config.TREND_HOT_GAMES} games vs prior {config.TREND_BASE_GAMES})\n")
+          f"last {config.TREND_HOT_GAMES} games vs prior {config.TREND_BASE_GAMES}; source: {trends.source})\n")
     if roster:
         print("YOUR ROSTER")
         for p in roster:
             t = trends.get(p.name, is_goalie=p.is_goalie)
-            print(f"  {p.name:24} {t.label() if t else 'no recent game data'}")
+            print(f"  {p.name:24} {t.label(stale=trends.stale) if t else 'no recent game data'}")
     else:
         print("No roster available (Yahoo unreachable and no state/my_roster.txt).")
-    hot = [t for t in trends.hot_skaters() if not any(_normalize(p.name) == _normalize(t.name) for p in roster)]
-    print("\nHOTTEST SKATERS (not on your roster; check availability in Yahoo)")
+    hot = [] if trends.stale else [t for t in trends.hot_skaters()
+                                    if not any(_normalize(p.name) == _normalize(t.name) for p in roster)]
+    print("\nHOTTEST SKATERS (not on your roster; check availability in Yahoo)"
+          + ("\n  (no current-season games yet)" if trends.stale else ""))
     for t in hot[:15]:
         print(f"  {t.name:24} {t.team:4} {t.label()}")
     print()
@@ -192,6 +200,24 @@ def friendly_yahoo_error(e: Exception) -> str:
         return ("Yahoo API access pending approval (403 'not authorized'). "
                 "Apply at https://sports.yahoo.com/developer/access/ — see DEPLOY.md.")
     return msg[:200]
+
+
+def merge_contracts(players: list) -> list:
+    """Add keeper contracts: mine join the roster, others are marked as owned."""
+    from contracts import contract_player_infos
+    from stats_provider import name_keys
+    have = {k for p in players for k in name_keys(p.name)}
+    added = []
+    for c in contract_player_infos():
+        keys = name_keys(c.name)
+        if any(k in have for k in keys):
+            continue
+        have.update(keys)
+        added.append(c)
+    if added:
+        logger.info("Added %d keeper contracts to the player universe (%d on my roster)",
+                    len(added), sum(1 for c in added if c.on_my_roster))
+    return players + added
 
 
 def load_roster_file() -> list:
@@ -231,6 +257,7 @@ def collect_scouting(yahoo, nhl, stats, store, as_of: date, yahoo_error: str = N
         if players:
             roster_note = (f"Using {len(players)} players from {config.ROSTER_FILE.name} as your roster; "
                            f"free-agent availability is unknown until Yahoo access is restored.")
+    players = merge_contracts(players)
     ctx = ScoutContext(stats, nhl, store, as_of=as_of, players=players,
                        yahoo_ok=bool(players) and yahoo is not None and not yahoo_error)
     opps = []
@@ -344,6 +371,8 @@ def main():
     parser.add_argument("--draft", action="store_true", help="Print a draft board and exit")
     parser.add_argument("--top", type=int, default=200, help="Draft board size (default 200)")
     parser.add_argument("--draft-md", default=None, help="Also write the draft board to this markdown file")
+    parser.add_argument("--include-contracted", action="store_true", help="With --draft: keep contracted players on the board")
+    parser.add_argument("--import-contracts", metavar="FILE", help="Import keeper contracts from a saved contracts page (.html) or .json")
     parser.add_argument("--status", action="store_true", help="Show recent recommendations")
     parser.add_argument("--log-level", default=None, choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -355,8 +384,13 @@ def main():
     if args.status:
         decision_log.print_summary()
         return
+    if args.import_contracts:
+        from contracts import import_contracts, CONTRACTS_FILE
+        n = import_contracts(args.import_contracts)
+        print(f"✅ Imported {n} contracts to {CONTRACTS_FILE}")
+        return
     if args.draft:
-        run_draft(args.top, args.draft_md)
+        run_draft(args.top, args.draft_md, include_contracted=args.include_contracted)
         return
     if args.trends:
         run_trends(as_of=date.fromisoformat(args.as_of) if args.as_of else date.today())

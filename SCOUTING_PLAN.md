@@ -10,6 +10,12 @@
 > `ANTHROPIC_API_KEY` is set. `python main.py --auth` now uses the app's
 > registered redirect URI (Yahoo dropped the old "oob" flow).
 >
+> 2026-09-16 (late): `nhl_stats.py` reads official NHL season summaries (one
+> call for the whole league) and per-player game logs by NHL player ID.
+> Valuation and trend lines are now exact under the league formula (GWG,
+> wins, shutouts included); MoneyPuck remains the source for PP share,
+> expected goals, on-ice differential and goalie start detection.
+>
 > Valuation is now the league's points formula (`scoring.py`, from
 > web-app/js/scoring.js) rather than category z-scores; trend lines, the
 > ranker, and the draft board all use it.

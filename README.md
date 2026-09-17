@@ -104,8 +104,10 @@ fantasy-hockey-agent/
 │   ├── ownership.py     #   Yahoo ownership surges
 │   ├── dailyfaceoff.py  #   Line/PP-unit changes from DailyFaceoff pages
 │   └── news.py          #   RSS feeds classified by Claude into typed events
-├── draft_board.py       # --draft: category-weighted board with PP1/COLD/HOT flags
+├── contracts.py         # Keeper contracts from the league site (state/contracts.json)
+├── draft_board.py       # --draft: FPPG board with PP1/COLD/HOT flags, contracts excluded
 ├── scoring.py           # League fantasy-point formulas (skater and goalie)
+├── nhl_stats.py         # Official NHL stats by player ID: season summaries + game logs (cached)
 ├── trend.py             # Per-game fantasy points, sparklines, hot/cold detection
 ├── decision_log.py      # Logs all decisions for review
 ├── requirements.txt
@@ -130,12 +132,20 @@ fantasy-hockey-agent/
 - Each scout compares today against the previous run's snapshot in `state/`
   and emits opportunities; the ranker scores them against your weakest
   compatible roster player and groups them as Act Now / Rising / Watchlist
-- Player values are projected fantasy points per game under the league's
-  points formula (`scoring.py`; weights in `.env`), falling back to last
-  season early in the year. `VALUATION=categories` switches to z-scores
-  for category leagues
+- Player values are fantasy points per game under the league's points
+  formula (`scoring.py`; weights in `.env`) computed from official NHL
+  season totals, so they match the league site exactly; MoneyPuck fills
+  gaps and supplies PP share, expected goals and on-ice numbers. Values
+  fall back to last season early in the year. `VALUATION=categories`
+  switches to z-scores for category leagues
+- Trend lines come from official per-player NHL game logs for the roster,
+  contracts and the top of the league (a few hundred cached requests a day)
 - Every player card carries a trend line: sparkline of fantasy points per
   game, last 5 vs prior 20, with a note on whether shot volume rose too
   (`FANTASY_POINTS_WEIGHTS` sets the points formula)
+- Keeper contracts are fetched from the league site's public Firestore
+  collection on every run (cached in `state/contracts.json`); contracted
+  players are excluded from the draft board, your own contracts count as
+  roster, other GMs' contracts show as trade targets
 - The news scout needs `ANTHROPIC_API_KEY`; everything else runs without it
 - Full design: `SCOUTING_PLAN.md`

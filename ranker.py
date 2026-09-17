@@ -91,7 +91,7 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
         if trends is not None and not any(s in (HOT_STREAK, COLD_STREAK) for s in o.signals):
             t = trends.get(o.player_name, is_goalie=o.is_goalie)
             if t:
-                o.evidence_lines.append(f"Trend: {t.label()}")
+                o.evidence_lines.append(f"Trend: {t.label(stale=trends.stale)}")
         unit = dfo.get(_normalize_name(o.player_name))
         if unit:
             from scouts.dailyfaceoff import describe_unit
@@ -101,6 +101,8 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
             if unit.get("team") and not o.nhl_team:
                 o.nhl_team = unit["team"]
         entry = o.to_dict()
+        sig_key = ",".join(sorted(o.signals))
+        entry["_sig"] = sig_key
         if o.is_warning:
             entry["score"] = round(o.confidence * URGENCY_MULT.get(o.urgency, 1.0), 2)
             report.roster_alerts.append(entry)
@@ -109,7 +111,8 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
             continue
         drop = _weakest_compatible(o, roster)
         gain = (o.projected_value - drop["value"]) if drop else o.projected_value
-        entry["drop_candidate"] = drop["name"] if drop else None
+        # A drop suggestion only makes sense for players you could actually add
+        entry["drop_candidate"] = drop["name"] if (drop and o.available is not False) else None
         entry["drop_value"] = round(drop["value"], 1) if drop else None
         entry["gain"] = round(gain, 1)
         games = ctx.games_next_week(o.nhl_team) if o.nhl_team else 0
@@ -141,8 +144,6 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
 
         # Repeat suppression: same player, same signals, shown within the last
         # few days and not urgent -> one-line "still available" mention instead
-        sig_key = ",".join(sorted(o.signals))
-        entry["_sig"] = sig_key
         prev = shown.get(_normalize_name(o.player_name))
         if prev and prev.get("signals") == sig_key and prev.get("date", "") >= cutoff and o.urgency != URGENCY_NOW:
             report.still_available.append(entry)
@@ -164,9 +165,9 @@ def rank(opps: list[Opportunity], ctx: ScoutContext) -> RankedReport:
     # Only players actually displayed count as "shown" for later suppression
     for section in (report.act_now, report.rising, report.watchlist):
         for e in section:
-            shown[_normalize_name(e["player_name"])] = {"signals": e["_sig"], "date": today}
+            shown[_normalize_name(e["player_name"])] = {"signals": e.get("_sig", ""), "date": today}
     for e in report.still_available:
-        shown[_normalize_name(e["player_name"])]["date"] = today   # keep suppressing while listed
+        shown.setdefault(_normalize_name(e["player_name"]), {"signals": e.get("_sig", "")})["date"] = today
     for section in (report.act_now, report.rising, report.watchlist, report.still_available, report.roster_alerts):
         for e in section:
             e.pop("_sig", None)

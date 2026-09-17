@@ -81,6 +81,11 @@ def _normalize_name(name: str) -> str:
     return normalized.encode("ascii", "ignore").decode("ascii").lower().strip()
 
 
+def _drop_accented(name: str) -> str:
+    """MoneyPuck sometimes deletes accented letters outright: Stützle -> Sttzle."""
+    return "".join(ch for ch in name if ord(ch) < 128).lower().strip()
+
+
 def name_keys(name: str) -> list[str]:
     """Lookup keys for fuzzy name matching between Yahoo and MoneyPuck.
 
@@ -93,6 +98,9 @@ def name_keys(name: str) -> list[str]:
         return []
     normalized = NAME_ALIASES.get(normalized, normalized)
     keys = [normalized]
+    dropped = _drop_accented(name)
+    if dropped and dropped != normalized:
+        keys.append(dropped)
     parts = normalized.replace(".", "").split()
     if len(parts) >= 2:
         first, last = parts[0], parts[-1]
@@ -129,6 +137,8 @@ class StatsProvider:
         self._skater_fppg: dict[str, float] = {}   # name key -> season fantasy points per game
         self._goalie_fppg: dict[str, tuple[float, int]] = {}   # name key -> (FP per start, starts)
         self._team_results: Optional[dict] = None  # (team, date) -> (GF, GA)
+        self.nhl = None                            # NHLStats, set in set_points_scoring
+        self._values_source = "moneypuck"
         self._game_log_cache: dict[tuple, pl.DataFrame] = {}
 
     # ── Loading ──────────────────────────────────────────────────
@@ -260,10 +270,15 @@ class StatsProvider:
             self.set_league_categories(cats)
 
     def set_points_scoring(self):
-        """Value = projected fantasy points per game under the league formula (x10)."""
+        """Value = projected fantasy points per game under the league formula (x10).
+
+        Official NHL season totals (nhl_stats) are used when reachable, so the
+        numbers match the league site exactly; MoneyPuck fills any gaps.
+        """
         self.load()
         self._points_mode = True
         self._cat_values = {}
+        self._load_nhl_values()
         seen = set()
         for row in self._skaters.values():
             name = row["name"]
@@ -278,9 +293,31 @@ class StatsProvider:
                 self._lookup(self._skaters_by_sit.get("pp", {}), name),
                 self._lookup(self._skaters_by_sit.get("pk", {}), name))
             for key in name_keys(name):
-                self._skater_fppg[key] = fp / gp
+                self._skater_fppg.setdefault(key, fp / gp)
         self._compute_goalie_points()
-        logger.info("Points valuation ready: %d skaters, %d goalies", len(seen), len(self._goalie_fppg) // 3 or len(self._goalie_fppg))
+        logger.info("Points valuation ready (%s): %d skaters", self._values_source, len(seen))
+
+    def _load_nhl_values(self):
+        """Exact fantasy points per game from the NHL API, keyed by name keys."""
+        try:
+            from nhl_stats import NHLStats
+            self.nhl = NHLStats(as_of=self.as_of)
+            skaters = self.nhl.all_skater_values()
+            goalies = self.nhl.all_goalie_values()
+            if not skaters:
+                raise ValueError("no skater rows")
+            for pid, fppg in skaters.items():
+                for key in name_keys(self.nhl.name_of(pid)):
+                    self._skater_fppg[key] = fppg
+            for pid, (fp, starts) in goalies.items():
+                for key in name_keys(self.nhl.name_of(pid)):
+                    self._goalie_fppg[key] = (fp, starts)
+            self._values_source = f"NHL API {self.nhl.season}"
+            if self.nhl.season_is_stale:
+                self.season_is_stale = True
+        except Exception as e:
+            logger.warning("NHL API values unavailable (%s); using MoneyPuck", str(e)[:80])
+            self.nhl = None
 
     def team_results(self) -> dict:
         """(team, gameDate iso) -> (goalsFor, goalsAgainst) for the season."""
@@ -317,6 +354,8 @@ class StatsProvider:
         return out
 
     def _compute_goalie_points(self):
+        if self._goalie_fppg:
+            return          # already filled from the NHL API
         totals: dict[str, list] = {}
         for g in self.goalie_game_points():
             t = totals.setdefault(g["name"], [0.0, 0])
@@ -325,6 +364,29 @@ class StatsProvider:
         for name, (fp, n) in totals.items():
             for key in name_keys(name):
                 self._goalie_fppg[key] = (fp / n, n)
+
+    def top_skaters(self, n: int = 150) -> list[str]:
+        """Best skaters by current value (for building a trend pool)."""
+        self.load()
+        seen, rows = set(), []
+        for row in self._skaters.values():
+            if row["name"] in seen:
+                continue
+            seen.add(row["name"])
+            rows.append((self.get_skater_value(row["name"]), row["name"]))
+        rows.sort(reverse=True)
+        return [name for _, name in rows[:n]]
+
+    def top_goalies(self, n: int = 30) -> list[str]:
+        self.load()
+        seen, rows = set(), []
+        for row in self._goalies.values():
+            if row["name"] in seen:
+                continue
+            seen.add(row["name"])
+            rows.append((self.get_goalie_value(row["name"]), row["name"]))
+        rows.sort(reverse=True)
+        return [name for _, name in rows[:n]]
 
     def set_league_categories(self, categories: list[str], negative: set[str] = None):
         """Enable category-weighted valuation using the league's stat categories."""

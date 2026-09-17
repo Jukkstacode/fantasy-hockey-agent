@@ -376,7 +376,8 @@ def format_scouting_text(report: dict) -> str:
         for e in entries:
             sig = ", ".join(_SIGNAL_LABELS.get(s, s) for s in e.get("signals", []))
             drop = f" / drop {e['drop_candidate']}" if e.get("drop_candidate") else ""
-            lines.append(f"    {e['player_name']} ({e.get('nhl_team', '')}) [{sig}]{drop}")
+            note = f" — {e['note']}" if e.get("note") else ""
+            lines.append(f"    {e['player_name']} ({e.get('nhl_team', '')}) [{sig}]{drop}{note}")
             for ev in e.get("evidence_lines", []):
                 lines.append(f"      {ev}")
     still = report.get("still_available", [])

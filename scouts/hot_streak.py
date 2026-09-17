@@ -19,6 +19,10 @@ class HotStreakScout(Scout):
         trends = ctx.extras.get("trends")
         if trends is None:
             return []
+        trends.build()
+        if trends.stale:
+            logger.info("No current-season games yet; streak detection starts with the season")
+            return []
         opps = []
         for t in trends.hot_skaters():
             if ctx.on_my_roster(t.name):
